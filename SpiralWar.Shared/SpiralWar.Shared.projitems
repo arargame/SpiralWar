@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects>$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>{A5C5D2B0-3F7E-4E8A-B123-9D6C45F87A12}</SharedGUID>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)SpiralWarGame.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)GameConstants.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\IUpdatable.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\IRenderable.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\GameObject.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\SaveManager.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Sprite.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Entity.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Enemy.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Player.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Bullet.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\SnakeSegment.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Snake.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Supply.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\PrimitiveDrawer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\NeonRenderer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\IScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\ScreenManager.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\MenuScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\GameScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\BulletSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\SupplySystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\CollisionSystem.cs" />
+  </ItemGroup>
+</Project>
