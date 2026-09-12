@@ -3,165 +3,328 @@ using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using SpiralWar.Core;
+using SpiralWar.Levels;
 
 namespace SpiralWar.Entities
 {
     /// <summary>
-    /// Spiral hareketi ile dışarıdan içe doğru ilerleyen yılanı yönetir.
-    /// Kafa parametrik spiral yolda ilerler; her segment, kafanın
-    /// konum geçmişini bir ofsetle takip eder (trail pattern).
+    /// The spiral itself: a head on a parametric path, with every body ring following the
+    /// head's history.
+    ///
+    /// The trail is indexed by ARC LENGTH, not by frame count. That matters more than it
+    /// sounds: the head's tangential speed collapses as the radius shrinks, so a
+    /// "N frames behind" rule makes the rings pile into each other near the core and stretch
+    /// apart at the rim. Spacing the rings by distance keeps the snake looking like one solid
+    /// object for the whole descent, and it also makes the collision boxes line up with what
+    /// the player sees.
     /// </summary>
     public sealed class Snake : GameObject
     {
-        // ── Segmentler ─────────────────────────────────────────────────────────
-        public SnakeSegment?              Head     { get; private set; }
+        public SnakeSegment? Head { get; private set; }
         public IReadOnlyList<SnakeSegment> Segments => _segments;
+        public LevelDefinition Level { get; }
 
-        private readonly List<SnakeSegment> _segments = new();
-        private readonly List<Vector2>      _trail    = new();   // kafa konum geçmişi
-
-        // ── Spiral parametreleri ────────────────────────────────────────────────
-        private float _elapsed;
-        private float _startRadius;
-        private float _startAngle;
-        private readonly Vector2 _center;
-
-        // Yılan kafasının merkeze ulaşıp ulaşmadığı
+        /// <summary>True once the head has arrived at the core — the player has lost.</summary>
         public bool HeadReachedCenter { get; private set; }
-        private const float CenterThreshold = 40f;
 
-        // Supply drop event'i (segment öldüğünde tetiklenir)
+        /// <summary>0 at the rim, 1 at the core. Drives the warning ring and the music-less tension.</summary>
+        public float Danger { get; private set; }
+
+        public int TotalSegmentCount { get; }
+        public int AliveSegmentCount { get; private set; }
+
+        /// <summary>Raised when a body ring is destroyed. Carries the ring so drops can spawn.</summary>
         public event EventHandler<SnakeSegment>? SegmentKilled;
 
-        private readonly SpriteFont _font;
-        private readonly Texture2D  _pixel;
-        
-        public int TotalSegmentCount { get; private set; }
+        /// <summary>Raised whenever a ring actually loses hit points. Payload: the ring and the amount.</summary>
+        public event EventHandler<SegmentDamageEventArgs>? SegmentDamaged;
 
-        public Snake(int level, SpriteFont font, Texture2D pixel)
+        private readonly List<SnakeSegment> _segments = new List<SnakeSegment>();
+        private readonly List<Vector2> _trail = new List<Vector2>();
+        private readonly List<float> _step = new List<float>();
+
+        private readonly Vector2 _center;
+        private readonly float _startRadius;
+        private readonly float _startAngle;
+        private readonly float _segmentSpacing;
+        private readonly Random _rng;
+
+        private float _elapsed;
+        private float _currentRadius;
+
+        public Snake(LevelDefinition level, SpriteFont font, Texture2D pixel, int seed)
         {
-            _font   = font;
-            _pixel  = pixel;
+            Level = level;
+            _rng = new Random(seed);
             _center = new Vector2(GameConstants.ScreenWidth / 2f, GameConstants.ScreenHeight / 2f);
 
-            // Ekranın köşesinden biraz dışarıda başla
-            _startRadius = (float)Math.Sqrt(
-                Math.Pow(GameConstants.ScreenWidth  / 2f + 100, 2) +
-                Math.Pow(GameConstants.ScreenHeight / 2f + 100, 2));
-            _startAngle = 0f;
+            // Spawn beyond the screen corner so the snake always arrives from off-stage.
+            float halfW = GameConstants.ScreenWidth / 2f + 110f;
+            float halfH = GameConstants.ScreenHeight / 2f + 110f;
+            _startRadius = MathF.Sqrt(halfW * halfW + halfH * halfH);
+            _currentRadius = _startRadius;
 
-            TotalSegmentCount = 10 + (level * 4);
-            BuildSnake(level);
+            _startAngle = (float)(_rng.NextDouble() * Math.Tau);
+            _segmentSpacing = GameConstants.SegmentWidth * 0.72f;
+
+            TotalSegmentCount = level.SegmentCount;
+            AliveSegmentCount = TotalSegmentCount;
+
+            Build(level, font, pixel);
         }
 
-        private void BuildSnake(int level)
+        private void Build(LevelDefinition level, SpriteFont font, Texture2D pixel)
         {
-            Head = new SnakeSegment(isHead: true, level, _font, _pixel);
-            // Trail yeterince dolana kadar kafanın başlangıç pozuna set et
-            float initX = _center.X + _startRadius;
-            float initY = _center.Y;
-            Head.SetPosition(new Vector2(initX, initY));
+            Head = new SnakeSegment(isHead: true, level, font, pixel, _rng);
 
-            // Geçmişi kafanın ilk pozisyonuyla önceden doldur
-            int totalTrailNeeded = (TotalSegmentCount + 1)
-                                   * GameConstants.SegmentTrailSteps + 60;
-            for (int i = 0; i < totalTrailNeeded; i++)
-                _trail.Add(Head.Position);
+            Vector2 spawn = _center + new Vector2(
+                MathF.Cos(_startAngle) * _startRadius,
+                MathF.Sin(_startAngle) * _startRadius);
 
-            // Gövde segmentleri
+            Head.MoveTo(spawn, 0f);
+            Head.UpdateRotation(_startAngle + MathF.PI);
+
+            _trail.Add(spawn);
+            _step.Add(0f);
+
             for (int i = 0; i < TotalSegmentCount; i++)
             {
-                var seg = new SnakeSegment(isHead: false, level, _font, _pixel);
-                seg.Died += OnSegmentDied;
-                _segments.Add(seg);
+                var segment = new SnakeSegment(isHead: false, level, font, pixel, _rng);
+                segment.MoveTo(spawn, 0f);
+                segment.Died += OnSegmentDied;
+                segment.Damaged += OnSegmentDamaged;
+                _segments.Add(segment);
             }
         }
 
         private void OnSegmentDied(object? sender, EventArgs e)
         {
-            if (sender is SnakeSegment seg)
-                SegmentKilled?.Invoke(this, seg);
+            if (sender is not SnakeSegment segment) return;
+
+            AliveSegmentCount--;
+            if (AliveSegmentCount < 0) AliveSegmentCount = 0;
+
+            SegmentKilled?.Invoke(this, segment);
+        }
+
+        private void OnSegmentDamaged(object? sender, int amount)
+        {
+            if (sender is not SnakeSegment segment) return;
+            SegmentDamaged?.Invoke(this, new SegmentDamageEventArgs(segment, amount));
         }
 
         public override void Update(GameTime gameTime)
         {
+            if (Head == null) return;
+
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _elapsed += dt;
 
-            // ── Kafa: parametrik spiral ──────────────────────────────────────
-            float r     = _startRadius - GameConstants.SpiralInwardSpeed * _elapsed;
-            float angle = _startAngle  + GameConstants.SpiralAngularSpeed * _elapsed;
+            AdvanceHead(gameTime, dt);
+            RecordTrail();
+            PlaceSegments(gameTime, dt);
+        }
 
-            if (r < 0f) r = 0f;
+        // ── Head motion ────────────────────────────────────────────────────
 
-            Vector2 headTarget = _center + new Vector2(
-                MathF.Cos(angle) * r,
-                MathF.Sin(angle) * r);
+        private void AdvanceHead(GameTime gameTime, float dt)
+        {
+            if (Head == null) return;
 
-            // Kafanın hareketi yönüne döndür
-            Vector2 moveDir = headTarget - Head.Position;
-            if (moveDir.LengthSquared() > 0.01f)
-                Head.UpdateRotation(MathF.Atan2(moveDir.Y, moveDir.X));
+            float duration = MathF.Max(1f, Level.SpiralDuration);
+            float u = MathF.Min(1f, _elapsed / duration);
 
-            Head.SetPosition(headTarget);
+            // Eased progress: starts at the authored pace and tightens toward the core.
+            // At u = 1 this is exactly 1 regardless of the acceleration value.
+            float accel = Level.InwardAcceleration;
+            float progress = (u + accel * u * u) / (1f + accel);
+
+            _currentRadius = _startRadius * (1f - progress);
+            if (_currentRadius < 0f) _currentRadius = 0f;
+
+            Danger = 1f - _currentRadius / _startRadius;
+
+            float angle = _startAngle + Level.AngularSpeed * _elapsed;
+            Vector2 target = _center + new Vector2(
+                MathF.Cos(angle) * _currentRadius,
+                MathF.Sin(angle) * _currentRadius);
+
+            Vector2 move = target - Head.Position;
+            if (move.LengthSquared() > 0.0001f)
+                Head.UpdateRotation(MathF.Atan2(move.Y, move.X));
+
+            Head.MoveTo(target, dt);
             Head.Update(gameTime);
 
-            // Trail başına ekle
-            _trail.Insert(0, Head.Position);
-            // Çok büyümesin
-            int maxTrail = (_segments.Count + 2) * GameConstants.SegmentTrailSteps + 80;
-            while (_trail.Count > maxTrail) _trail.RemoveAt(_trail.Count - 1);
-
-            // ── Gövde: trail takibi ──────────────────────────────────────────
-            for (int i = 0; i < _segments.Count; i++)
-            {
-                var seg        = _segments[i];
-                int trailIndex = (i + 1) * GameConstants.SegmentTrailSteps;
-
-                if (trailIndex < _trail.Count)
-                {
-                    Vector2 prevPos = seg.Position;
-                    seg.SetPosition(_trail[trailIndex]);
-
-                    // Hareket yönüne döndür
-                    Vector2 segDir = seg.Position - prevPos;
-                    if (segDir.LengthSquared() > 0.01f)
-                        seg.UpdateRotation(MathF.Atan2(segDir.Y, segDir.X));
-                }
-
-                seg.Update(gameTime);
-            }
-
-            // ── Yılan kafası merkeze ulaştı mı? ──────────────────────────────
-            if (Vector2.Distance(Head.Position, _center) < CenterThreshold)
+            if (Vector2.Distance(Head.Position, _center) < GameConstants.HeadCenterRadius)
                 HeadReachedCenter = true;
         }
 
-        public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
+        // ── Trail ──────────────────────────────────────────────────────────
+
+        private void RecordTrail()
         {
-            // Kuyruktan başa doğru çiz (head en üstte)
-            for (int i = _segments.Count - 1; i >= 0; i--)
+            if (Head == null) return;
+
+            Vector2 head = Head.Position;
+            float moved = Vector2.Distance(head, _trail[0]);
+
+            // Only record a new point once the head has actually travelled. Recording every
+            // frame would fill the list with zero-length steps as the spiral slows down.
+            if (moved < 0.5f)
             {
-                if (_segments[i].IsAlive)
-                    _segments[i].Draw(spriteBatch, gameTime);
+                _trail[0] = head;
+                return;
             }
-            if (Head.IsAlive)
-                Head.Draw(spriteBatch, gameTime);
+
+            _trail.Insert(0, head);
+            _step.Insert(1, moved);
+            _step[0] = 0f;
+
+            TrimTrail();
         }
 
-        /// <summary>
-        /// Tüm canlı gövde segmentlerini döndürür (collision için).
-        /// </summary>
+        private void TrimTrail()
+        {
+            float maxLength = (_segments.Count + 3) * _segmentSpacing;
+            float total = 0f;
+
+            for (int i = 1; i < _step.Count; i++)
+            {
+                total += _step[i];
+                if (total <= maxLength) continue;
+
+                // Everything past this index is further back than the tail can ever reach.
+                int removeFrom = i + 1;
+                if (removeFrom < _trail.Count)
+                {
+                    _trail.RemoveRange(removeFrom, _trail.Count - removeFrom);
+                    _step.RemoveRange(removeFrom, _step.Count - removeFrom);
+                }
+                return;
+            }
+        }
+
+        // ── Body placement ─────────────────────────────────────────────────
+
+        private void PlaceSegments(GameTime gameTime, float dt)
+        {
+            int trailIndex = 1;
+            float walked = 0f;
+
+            for (int s = 0; s < _segments.Count; s++)
+            {
+                float desired = (s + 1) * _segmentSpacing;
+
+                // Walk further down the trail until we have covered the desired distance.
+                while (trailIndex < _trail.Count && walked + _step[trailIndex] < desired)
+                {
+                    walked += _step[trailIndex];
+                    trailIndex++;
+                }
+
+                SnakeSegment segment = _segments[s];
+                Vector2 position;
+                float rotation;
+
+                if (trailIndex >= _trail.Count)
+                {
+                    // The snake is not fully deployed yet: park the remaining rings on the
+                    // oldest known point. They unfurl as the head travels.
+                    position = _trail[_trail.Count - 1];
+                    rotation = segment.Rotation;
+                }
+                else
+                {
+                    float span = _step[trailIndex];
+                    float into = desired - walked;
+                    float t = span > 0.0001f ? MathHelper.Clamp(into / span, 0f, 1f) : 0f;
+
+                    Vector2 a = _trail[trailIndex - 1];
+                    Vector2 b = _trail[trailIndex];
+                    position = Vector2.Lerp(a, b, t);
+
+                    Vector2 forward = a - b;
+                    rotation = forward.LengthSquared() > 0.0001f
+                        ? MathF.Atan2(forward.Y, forward.X)
+                        : segment.Rotation;
+                }
+
+                if (segment.IsAlive)
+                {
+                    segment.MoveTo(position, dt);
+                    segment.UpdateRotation(rotation);
+                }
+
+                // Dead rings still tick so their flash finishes, but they stop moving.
+                segment.Update(gameTime);
+            }
+        }
+
+        // ── Queries ────────────────────────────────────────────────────────
+
+        /// <summary>Live body rings, for collision and HUD counts.</summary>
         public IEnumerable<SnakeSegment> GetAliveBodySegments()
         {
-            foreach (var s in _segments)
-                if (s.IsAlive) yield return s;
+            for (int i = 0; i < _segments.Count; i++)
+                if (_segments[i].IsAlive) yield return _segments[i];
         }
 
-        public bool IsDefeated()
+        public bool IsCleared => AliveSegmentCount <= 0;
+
+        public Vector2 Center => _center;
+
+        public float HeadDistanceToCenter => Head == null
+            ? float.MaxValue
+            : Vector2.Distance(Head.Position, _center);
+
+        /// <summary>Seconds left before the head arrives, assuming the current pace holds.</summary>
+        public float SecondsRemaining => MathF.Max(0f, Level.SpiralDuration - _elapsed);
+
+        /// <summary>
+        /// Margin around the canvas within which a ring is still drawn. Generous enough to
+        /// cover the glow halo of a ring whose centre has just left the view.
+        /// </summary>
+        private const float CullMargin = 70f;
+
+        private static bool IsOnScreen(Vector2 position)
+            => position.X > -CullMargin &&
+               position.X < GameConstants.ScreenWidth + CullMargin &&
+               position.Y > -CullMargin &&
+               position.Y < GameConstants.ScreenHeight + CullMargin;
+
+        public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
         {
-            // Tüm segmentler yok ve kafa merkeze ulaştıysa
-            return HeadReachedCenter;
+            // Tail first so the head ends up on top.
+            //
+            // A boss spiral is well over a hundred rings and most of them are still off-stage
+            // for the first half of the level. Each ring costs roughly fifty sprite draws once
+            // its glow layers are counted, so skipping the ones nobody can see is the single
+            // cheapest frame-time win available here.
+            for (int i = _segments.Count - 1; i >= 0; i--)
+            {
+                SnakeSegment segment = _segments[i];
+                if (!segment.IsAlive) continue;
+                if (!IsOnScreen(segment.Position)) continue;
+
+                segment.Draw(spriteBatch, gameTime);
+            }
+
+            if (Head != null && IsOnScreen(Head.Position))
+                Head.Draw(spriteBatch, gameTime);
+        }
+    }
+
+    /// <summary>Payload for <see cref="Snake.SegmentDamaged"/>.</summary>
+    public sealed class SegmentDamageEventArgs : EventArgs
+    {
+        public SnakeSegment Segment { get; }
+        public int Amount { get; }
+
+        public SegmentDamageEventArgs(SnakeSegment segment, int amount)
+        {
+            Segment = segment;
+            Amount = amount;
         }
     }
 }

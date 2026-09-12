@@ -6,6 +6,8 @@
     <Spacing>2</Spacing>
     <UseKerning>true</UseKerning>
     <Style>Bold</Style>
+    <!-- Any glyph outside the regions below renders as '?' instead of throwing at draw time. -->
+    <DefaultCharacter>?</DefaultCharacter>
     <CharacterRegions>
       <CharacterRegion>
         <Start>&#32;</Start>

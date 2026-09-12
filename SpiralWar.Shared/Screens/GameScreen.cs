@@ -1,251 +1,419 @@
 using System;
-using System.Globalization;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
-using Microsoft.Xna.Framework.Graphics;
-using Microsoft.Xna.Framework.Input;
+using SpiralWar.Audio;
+using SpiralWar.Core;
+using SpiralWar.Core.Config;
+using SpiralWar.Core.Input;
 using SpiralWar.Entities;
+using SpiralWar.Levels;
 using SpiralWar.Rendering;
 using SpiralWar.Systems;
-using SpiralWar.Core;
 
 namespace SpiralWar.Screens
 {
     /// <summary>
-    /// Ana oyun ekranı. Tüm sistem ve entity'leri koordine eder.
+    /// The arena. Owns the level's entities and systems, wires their events together and
+    /// decides when the level ends.
+    ///
+    /// It deliberately contains no rendering maths and no collision maths: those live in
+    /// <see cref="HudRenderer"/>, <see cref="NeonRenderer"/> and <see cref="CollisionSystem"/>.
+    /// What is left here is the part that genuinely belongs to "a level of SpiralWar" — the
+    /// state machine, the feedback routing and the progression rules.
     /// </summary>
     public sealed class GameScreen : IScreen
     {
+        private enum Phase { Intro, Playing, Outcome }
+
         private readonly ScreenManager _manager;
+        private readonly LevelDefinition _level;
+        private readonly string _milestoneBanner;
 
-        // ── Kaynaklar ───────────────────────────────────────────────────────────
-        private Texture2D?  _pixel;
-        private SpriteFont? _gameFont;
+        // Entities
+        private Player? _player;
+        private Snake? _snake;
 
-        // ── Oyun nesneleri ──────────────────────────────────────────────────────
-        private Player?          _player;
-        private Snake?           _snake;
+        // Systems
+        private BulletSystem? _bullets;
+        private SupplySystem? _supplies;
+        private CollisionSystem? _collisions;
+        private ParticleSystem? _particles;
+        private FloatingTextSystem? _floatingText;
+        private readonly CameraShake _shake = new CameraShake();
+        private readonly HudRenderer _hud = new HudRenderer();
 
-        // ── Sistemler ───────────────────────────────────────────────────────────
-        private BulletSystem?    _bulletSystem;
-        private SupplySystem?    _supplySystem;
-        private CollisionSystem? _collisionSystem;
+        // Volley buffer, allocated once — a fired volley must never allocate.
+        private readonly float[] _shotAngles = new float[Player.MaxShotsPerVolley];
 
-        // ── Durum ────────────────────────────────────────────────────────────────
-        private bool  _gameOver;
-        private bool  _playerWon;
-        private float _gameOverTimer;    // menüye dönüş gecikmesi
-        private const float GameOverDelay = 3f;
+        // State
+        private Phase _phase = Phase.Intro;
+        private float _phaseTimer;
+        private bool _playerWon;
+        private float _runSeconds;
+        private int _ringsDestroyed;
 
-        private KeyboardState _prevKeys;
-        private readonly int _level;
+        private const float IntroDuration = 2.0f;
+        private const float OutcomeDuration = 2.6f;
+        private const float HintFadeStart = 4f;
+        private const float HintFadeLength = 2f;
 
-        public GameScreen(ScreenManager manager, int level = 1)
+        public bool IsPopup => false;
+
+        public GameScreen(ScreenManager manager, int levelIndex)
         {
             _manager = manager;
-            _level = level;
+            _level = manager.Levels.GetLevel(levelIndex);
+            _milestoneBanner = LevelDesigner.GetMilestoneBanner(_level);
         }
+
+        // ── Setup ──────────────────────────────────────────────────────────
 
         public void LoadContent(ContentManager content)
         {
-            _pixel    = _manager.Pixel;
-            _gameFont = _manager.GameFont;
+            var pixel = _manager.Pixel!;
+            var font = _manager.GameFont!;
 
-            // Sistemler
-            _bulletSystem    = new BulletSystem(_pixel!);
-            _supplySystem    = new SupplySystem(_pixel!);
-            _collisionSystem = new CollisionSystem(_bulletSystem, _supplySystem);
+            _bullets = new BulletSystem(pixel);
+            _supplies = new SupplySystem(pixel, font);
+            _particles = new ParticleSystem(pixel);
+            _floatingText = new FloatingTextSystem();
+            _collisions = new CollisionSystem(_bullets);
 
-            // Oyuncu
-            _player = new Player(_pixel!);
-            _player.BulletFired += OnBulletFired;
-            _player.Died        += OnPlayerDied;
+            _player = new Player(pixel);
+            _player.Fired += OnPlayerFired;
+            _player.Died += OnPlayerDied;
 
-            // Yılan
-            _snake = new Snake(_level, _gameFont!, _pixel!);
+            // Seeding by level keeps a given level's ring layout stable across attempts, so a
+            // player can learn it instead of re-rolling the dice on every retry.
+            _snake = new Snake(_level, font, pixel, seed: _level.Index * 7919 + 13);
             _snake.SegmentKilled += OnSegmentKilled;
+
+            _collisions.BulletImpact += OnBulletImpact;
+            _collisions.PlayerContact += OnPlayerContact;
+            _collisions.CoreBreached += OnCoreBreached;
+
+            _supplies.Collected += OnSupplyCollected;
+            _supplies.Dropped += OnSupplyDropped;
         }
 
-        // ── Event Handlers ────────────────────────────────────────────────────
-        private void OnBulletFired(object? sender, float rotation)
+        public void Enter()
         {
-            if (_player == null || _bulletSystem == null) return;
-            var dir = new Vector2(MathF.Cos(rotation), MathF.Sin(rotation));
-            _bulletSystem.SpawnBullet(_player.Position, dir, _player.BulletDamage);
+            if (_phase == Phase.Intro && _level.IsBoss)
+                _manager.Audio.Play(SoundId.BossWarning, 0.8f);
         }
 
-        private void OnPlayerDied(object? sender, EventArgs e)
+        public void Leave() { }
+
+        public bool OnBack()
         {
-            _gameOver  = true;
-            _playerWon = false;
+            if (_phase == Phase.Outcome) return true; // do not interrupt the result card
+
+            _manager.Push(new PauseScreen(_manager, _level.Index));
+            return true;
         }
 
-        private void OnSegmentKilled(object? sender, SnakeSegment seg)
-        {
-            _supplySystem?.TryDropSupply(seg.Position);
+        // ── Update ─────────────────────────────────────────────────────────
 
-            // Tüm gövde segmentleri yok olduysa oyuncu kazandı
-            if (_snake != null && !HasAnyAliveSegment())
-            {
-                _gameOver  = true;
-                _playerWon = true;
-            }
-        }
-
-        private bool HasAnyAliveSegment()
-        {
-            if (_snake == null) return false;
-            foreach (var s in _snake.GetAliveBodySegments())
-                return true;
-            return false;
-        }
-
-        // ── Update ────────────────────────────────────────────────────────────
-        public void Update(GameTime gameTime)
+        public void Update(GameTime gameTime, InputState input)
         {
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
-            var keys = Keyboard.GetState();
+            _phaseTimer += dt;
 
-            // ESC → menüye dön
-            if (keys.IsKeyDown(Keys.Escape) && _prevKeys.IsKeyUp(Keys.Escape))
+            _shake.Update(gameTime);
+            _particles?.Update(gameTime);
+            _floatingText?.Update(gameTime);
+
+            switch (_phase)
             {
-                _manager.Replace(new MenuScreen(_manager));
-                return;
-            }
+                case Phase.Intro:
+                    UpdateIntro(gameTime, input);
+                    break;
 
-            if (_gameOver)
-            {
-                _gameOverTimer += dt;
-                if (_gameOverTimer >= GameOverDelay)
-                {
-                    if (_playerWon)
-                    {
-                        SaveManager.SaveLevel(_level + 1);
-                        _manager.Replace(new GameScreen(_manager, _level + 1));
-                    }
-                    else
-                    {
-                        _manager.Replace(new MenuScreen(_manager));
-                    }
-                }
-                return;
-            }
+                case Phase.Playing:
+                    UpdatePlaying(gameTime, input, dt);
+                    break;
 
-            _player?.Update(gameTime);
+                default:
+                    UpdateOutcome();
+                    break;
+            }
+        }
+
+        private void UpdateIntro(GameTime gameTime, InputState input)
+        {
+            // The ship is live during the intro so the player can already aim, but the snake
+            // holds still. Nothing feels worse than a countdown that steals control.
+            _player?.Update(gameTime, input);
+            _bullets?.Update(gameTime);
+
+            if (_phaseTimer >= IntroDuration)
+                EnterPhase(Phase.Playing);
+        }
+
+        private void UpdatePlaying(GameTime gameTime, InputState input, float dt)
+        {
+            _runSeconds += dt;
+
+            _player?.Update(gameTime, input);
             _snake?.Update(gameTime);
-            _bulletSystem?.Update(gameTime);
-            _supplySystem?.Update(gameTime, _player);
+            _bullets?.Update(gameTime);
+            _supplies?.Update(gameTime, _player);
 
-            if (_player != null && _snake != null)
-                _collisionSystem?.Update(_snake, _player);
+            if (_snake != null && _player != null)
+                _collisions?.Update(_snake, _player);
 
-            // Yılan kafası merkeze girdi → oyun bitti
-            if (_snake != null && _snake.HeadReachedCenter && !_gameOver)
-            {
-                _gameOver  = true;
-                _playerWon = false;
-            }
-
-            _prevKeys = keys;
+            if (_snake != null && _snake.IsCleared)
+                FinishLevel(won: true);
         }
 
-        // ── Draw ─────────────────────────────────────────────────────────────
-        public void Draw(SpriteBatch spriteBatch, GameTime gameTime)
+        private void UpdateOutcome()
         {
-            if (_pixel == null) return;
+            if (_phaseTimer < OutcomeDuration) return;
 
-            // Arka plan
-            NeonRenderer.DrawGrid(spriteBatch, _pixel,
-                GameConstants.ScreenWidth, GameConstants.ScreenHeight, 55);
+            if (!_playerWon)
+            {
+                _manager.PopToRoot();
+                return;
+            }
 
-            // Oyun nesneleri
-            _snake?.Draw(spriteBatch, gameTime);
-            _supplySystem?.Draw(spriteBatch, gameTime);
-            _bulletSystem?.Draw(spriteBatch, gameTime);
-            _player?.Draw(spriteBatch, gameTime);
+            if (_level.Index >= GameConstants.MaxLevel)
+            {
+                _manager.PopToRoot();
+                return;
+            }
 
-            // HUD
-            DrawHud(spriteBatch, gameTime);
-
-            // Game over overlay
-            if (_gameOver)
-                DrawGameOver(spriteBatch);
+            _manager.Replace(new GameScreen(_manager, _level.Index + 1));
         }
 
-        private void DrawHud(SpriteBatch spriteBatch, GameTime gameTime)
+        private void EnterPhase(Phase phase)
         {
-            if (_pixel == null || _gameFont == null || _player == null) return;
+            _phase = phase;
+            _phaseTimer = 0f;
+        }
 
-            // ESC ipucu
-            spriteBatch.DrawString(_gameFont, "[ESC] Menu",
-                new Vector2(8, 8), new Color(50, 70, 90));
+        // ── Events ─────────────────────────────────────────────────────────
 
-            // Boost göstergeleri
-            int y = 8;
-            if (_player.IsFireRateBoosted)
+        private void OnPlayerFired(object? sender, EventArgs e)
+        {
+            if (_player == null || _bullets == null) return;
+
+            int count = _player.GetShotAngles(_shotAngles);
+            Vector2 muzzle = _player.GetMuzzlePosition();
+            Color tint = _player.UsesWideFireSound ? Bullet.WideColor : Bullet.DefaultColor;
+
+            for (int i = 0; i < count; i++)
             {
-                string txt = $"FIRE BOOST  {_player.FireRateTimeLeft:F1}s";
-                spriteBatch.DrawString(_gameFont, txt,
-                    new Vector2(GameConstants.ScreenWidth - 220, y),
-                    new Color(0, 255, 160));
-                y += 22;
-            }
-            if (_player.IsDamageBoosted)
-            {
-                string txt = $"DMG  x{GameConstants.DefaultBulletDamage + GameConstants.DamageBoostAmount}  {_player.DamageBoostTimeLeft:F1}s";
-                spriteBatch.DrawString(_gameFont, txt,
-                    new Vector2(GameConstants.ScreenWidth - 220, y),
-                    new Color(255, 130, 0));
+                float angle = _shotAngles[i];
+                var direction = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+                _bullets.Spawn(muzzle, direction, _player.BulletDamage, tint);
             }
 
-            // Level ve Kalan segment sayısı
-            int alive = 0;
+            _particles?.EmitMuzzle(muzzle, _player.Rotation, tint);
+
+            // One sound per VOLLEY, not per bullet — seven stacked copies of the same waveform
+            // is what made the old build unpleasant to listen to.
+            SoundId id = _player.UsesWideFireSound ? SoundId.ShootWide : SoundId.Shoot;
+            _manager.Audio.PlayVaried(id, 0.9f, 0.10f);
+        }
+
+        private void OnBulletImpact(object? sender, BulletImpactEventArgs e)
+        {
+            SnakeSegment segment = e.Segment;
+
+            _particles?.EmitHit(e.Point, e.Direction, segment.NeonColor);
+            _shake.Add(GameConstants.ShakeOnSegmentHit);
+
+            float pan = AudioManager.PanFor(e.Point.X);
+
+            if (e.Destroyed)
+            {
+                // Destruction is handled in OnSegmentKilled so it also covers any future
+                // non-bullet kill. Only the impact-specific feedback belongs here.
+                return;
+            }
+
+            if (GameConfig.Settings.ShowDamageNumbers && e.DamageApplied > 0)
+                _floatingText?.ShowDamage(e.Point, e.DamageApplied,
+                    Color.Lerp(segment.NeonColor, Color.White, 0.55f));
+
+            // Pitch rises with how much of the ring the hit took off, so a hit that nearly
+            // finishes a ring sounds different from a scratch on a fresh one.
+            float bite = segment.MaxHealth > 0
+                ? MathHelper.Clamp(e.DamageApplied / (float)segment.MaxHealth, 0f, 1f)
+                : 0f;
+
+            SoundId hitSound = segment.IsArmored ? SoundId.SegmentArmorHit : SoundId.SegmentHit;
+            _manager.Audio.PlayVaried(hitSound, 0.75f + bite * 0.25f, 0.14f, pan);
+        }
+
+        private void OnSegmentKilled(object? sender, SnakeSegment segment)
+        {
+            _ringsDestroyed++;
+
+            float scale = segment.IsArmored ? 1.25f : 1f;
+            _particles?.EmitDestruction(segment.Position, segment.NeonColor, scale);
+            _shake.Add(GameConstants.ShakeOnSegmentKill * scale);
+
+            _manager.Audio.PlayVaried(SoundId.SegmentDestroy, 0.85f, 0.12f,
+                AudioManager.PanFor(segment.Position.X));
+
+            _supplies?.ReleaseFrom(segment);
+        }
+
+        private void OnSupplyDropped(object? sender, Supply supply)
+        {
+            _manager.Audio.Play(SoundId.SupplyDrop, 0.55f, 0f,
+                AudioManager.PanFor(supply.Position.X));
+        }
+
+        private void OnSupplyCollected(object? sender, Supply supply)
+        {
+            _particles?.EmitPickup(supply.Position, supply.Tint);
+            _floatingText?.ShowLabel(
+                supply.Position + new Vector2(0f, -28f),
+                SupplyTypeInfo.NameOf(supply.Type),
+                Color.Lerp(supply.Tint, Color.White, 0.4f),
+                0.8f);
+
+            _manager.Audio.Play(
+                supply.Type == SupplyType.HealthPack ? SoundId.HealthPickup : SoundId.SupplyPickup,
+                0.85f);
+        }
+
+        private void OnPlayerContact(object? sender, SnakeSegment segment)
+        {
+            if (_player == null) return;
+
+            Vector2 away = _player.Position - segment.Position;
+            if (away.LengthSquared() < 0.001f) away = Vector2.UnitY;
+
+            _particles?.EmitPlayerHurt(_player.Position, away);
+            _shake.Add(GameConstants.ShakeOnPlayerHurt);
+            _manager.Audio.Play(SoundId.PlayerHurt, 0.9f);
+
+            if (GameConfig.Settings.ShowDamageNumbers)
+                _floatingText?.ShowDamage(_player.Position + new Vector2(0f, -30f),
+                    GameConstants.ContactDamagePerTick, new Color(255, 80, 80));
+        }
+
+        private void OnCoreBreached(object? sender, EventArgs e)
+        {
+            _shake.Add(30f);
+            if (_player != null)
+                _particles?.EmitDestruction(_player.Position, new Color(255, 70, 70), 2.2f);
+        }
+
+        private void OnPlayerDied(object? sender, EventArgs e) => FinishLevel(won: false);
+
+        // ── Level completion ───────────────────────────────────────────────
+
+        private void FinishLevel(bool won)
+        {
+            if (_phase == Phase.Outcome) return;
+
+            _playerWon = won;
+            EnterPhase(Phase.Outcome);
+
+            _manager.Audio.Play(won ? SoundId.LevelClear : SoundId.PlayerDown, 0.95f);
+
+            long score = _ringsDestroyed * (long)_level.Index * 10L;
+
+            SaveManager.RecordRun(
+                segmentsDestroyed: _ringsDestroyed,
+                shotsFired: _bullets?.ShotsFired ?? 0,
+                suppliesCollected: _supplies?.CollectedCount ?? 0,
+                playSeconds: _runSeconds,
+                died: !won,
+                score: score);
+
+            if (won)
+            {
+                int next = Math.Min(GameConstants.MaxLevel, _level.Index + 1);
+                SaveManager.SaveLevel(next);
+            }
+        }
+
+        // ── Draw ───────────────────────────────────────────────────────────
+
+        public void Draw(DrawContext ctx, GameTime gameTime)
+        {
+            ctx.ShakeOffset = _shake.Offset;
+
+            DrawWorld(ctx, gameTime);
+            DrawHud(ctx, gameTime);
+
+            ctx.ShakeOffset = Vector2.Zero;
+        }
+
+        private void DrawWorld(DrawContext ctx, GameTime gameTime)
+        {
+            float time = (float)gameTime.TotalGameTime.TotalSeconds;
+            float danger = _snake?.Danger ?? 0f;
+
+            ctx.UseWorld();
+
+            _manager.Background.Draw(ctx.Batch, ctx.Pixel, _level.ThemeColor, 1f);
+
+            NeonRenderer.DrawGrid(ctx.Batch, ctx.Pixel, ctx.Width, ctx.Height,
+                _level.ThemeColor, 55, 1f + danger * 0.8f);
+
+            NeonRenderer.DrawCoreRing(ctx.Batch, ctx.Pixel, ctx.Center, danger, time,
+                _level.ThemeColor);
+
+            _snake?.Draw(ctx.Batch, gameTime);
+            _supplies?.Draw(ctx.Batch, gameTime);
+            _bullets?.Draw(ctx.Batch, gameTime);
+            _particles?.Draw(ctx.Batch);
+            _player?.Draw(ctx.Batch, gameTime);
+
+            _floatingText?.Draw(ctx.Batch, ctx.GameFont);
+        }
+
+        private void DrawHud(DrawContext ctx, GameTime gameTime)
+        {
+            float time = (float)gameTime.TotalGameTime.TotalSeconds;
+
+            if (_player != null)
+            {
+                _hud.DrawHealth(ctx, _player, time);
+                _hud.DrawBoosts(ctx, _player);
+            }
+
             if (_snake != null)
-                foreach (var _ in _snake.GetAliveBodySegments()) alive++;
+            {
+                _hud.DrawLevelStatus(ctx, _level,
+                    _snake.AliveSegmentCount, _snake.SecondsRemaining, _snake.Danger);
+            }
 
-            string lvInfo = $"LEVEL: {_level}";
-            spriteBatch.DrawString(_gameFont, lvInfo,
-                new Vector2(GameConstants.ScreenWidth / 2f - _gameFont.MeasureString(lvInfo).X / 2f,
-                            GameConstants.ScreenHeight - 56),
-                new Color(255, 200, 0));
+            _hud.DrawHint(ctx, HintAlpha());
 
-            string segInfo = $"SEGMENTS: {alive} / {(_snake != null ? _snake.TotalSegmentCount : 0)}";
-            var segSize = _gameFont.MeasureString(segInfo);
-            spriteBatch.DrawString(_gameFont, segInfo,
-                new Vector2(GameConstants.ScreenWidth / 2f - segSize.X / 2f,
-                            GameConstants.ScreenHeight - 28),
-                new Color(80, 120, 160));
+            if (_phase == Phase.Intro)
+                _hud.DrawIntro(ctx, _level, _milestoneBanner, IntroAlpha());
+
+            if (_phase == Phase.Outcome)
+            {
+                _hud.DrawOutcome(ctx, _playerWon, _level, OutcomeAlpha(),
+                    _ringsDestroyed, _supplies?.CollectedCount ?? 0);
+            }
         }
 
-        private void DrawGameOver(SpriteBatch spriteBatch)
+        /// <summary>Fades the intro card in over 0.3 s and out over the last 0.5 s.</summary>
+        private float IntroAlpha()
         {
-            if (_pixel == null || _gameFont == null) return;
+            if (_phaseTimer < 0.3f) return _phaseTimer / 0.3f;
+            float remaining = IntroDuration - _phaseTimer;
+            if (remaining < 0.5f) return MathHelper.Clamp(remaining / 0.5f, 0f, 1f);
+            return 1f;
+        }
 
-            var overlay = new Rectangle(0, 0,
-                GameConstants.ScreenWidth, GameConstants.ScreenHeight);
-            PrimitiveDrawer.DrawFilledRect(spriteBatch, _pixel, overlay,
-                new Color(0, 0, 0) * 0.65f);
+        private float OutcomeAlpha()
+            => MathHelper.Clamp(_phaseTimer / 0.45f, 0f, 1f);
 
-            string msg   = _playerWon ? $"LEVEL {_level} CLEARED!" : "GAME OVER";
-            Color  msgC  = _playerWon ? new Color(0, 255, 160) : new Color(255, 60, 60);
-            var    size  = _gameFont.MeasureString(msg);
-            var    pos   = new Vector2(
-                GameConstants.ScreenWidth  / 2f - size.X / 2f,
-                GameConstants.ScreenHeight / 2f - size.Y / 2f - 20);
-
-            // Glow
-            for (int i = 4; i >= 1; i--)
-                spriteBatch.DrawString(_gameFont, msg,
-                    pos + new Vector2(-i, -i), msgC * (0.12f / i));
-
-            spriteBatch.DrawString(_gameFont, msg, pos, msgC);
-
-            string sub  = _playerWon ? "Next level starting..." : "Returning to menu...";
-            var    subSz = _gameFont.MeasureString(sub);
-            spriteBatch.DrawString(_gameFont, sub,
-                new Vector2(GameConstants.ScreenWidth  / 2f - subSz.X / 2f,
-                            GameConstants.ScreenHeight / 2f + 20),
-                new Color(80, 100, 120));
+        private float HintAlpha()
+        {
+            if (_phase != Phase.Playing) return 0f;
+            if (_runSeconds < HintFadeStart) return 1f;
+            return MathHelper.Clamp(1f - (_runSeconds - HintFadeStart) / HintFadeLength, 0f, 1f);
         }
     }
 }

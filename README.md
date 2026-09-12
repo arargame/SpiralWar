@@ -1,33 +1,80 @@
 # SpiralWar
 
-SpiralWar is an infinite-level, arcade-style survival shooter built with **C#** and the **MonoGame** framework. Survive against ever-growing, segmented snake-like enemies in a dark, neon-lit grid universe.
+SpiralWar is an arcade survival shooter built with **C#** and **MonoGame**. One ship, bolted to
+the core of a neon arena. A segmented snake spirals in from off-screen. Destroy every ring
+before the head reaches the middle.
 
 ![Gameplay Screenshot](screenshot.png)
 
-## 🌟 Key Features
+## Features
 
-* **Infinite Level Progression:** As you advance through the levels, the snake segments proportionally scale in count and core health.
-* **Dynamic Neon Visuals:** High-fidelity primitive drawing with vibrant, glowing collision effects and a deep grid background.
-* **Persistent Save/Load System:** Your level progression is continuously saved, allowing you to easily resume your run from the main menu.
-* **Skill & Charge Mechanics:** Destroy enemy segments and gather supplies to accumulate charge for your special skills.
-* **Robust Software Architecture:** Built using clean, component-based structures adhering strictly to SOLID, YAGNI, and DRY principles.
+* **100 hand-tuned levels** generated from one smooth difficulty curve - boss spirals every ten
+  levels, ten colour tiers, and three milestone rules that each introduce something new:
+  armored rings at 25, the accelerating surge at 50, regenerating rings at 75.
+* **Readable damage.** A bullet always deals exactly 1. Every hit ticks the number printed on a
+  ring down by one, flashes it white, knocks it back, throws sparks and plays a sound pitched
+  by how much of that ring it took off. You never have to wonder whether a shot landed.
+* **Carrier rings.** Rings that are carrying a supply wear its glyph from the moment they
+  appear, so choosing what to shoot is a real decision instead of a lottery.
+  `T` triple fire, `D` diffused fire, `+` repair - and `T` and `D` stack into a seven-shot fan.
+* **Fully procedural presentation.** Every visual is drawn from a single white texel, and every
+  sound is synthesized at start-up. There is not one art or audio file in this repository.
+* **Real neon.** Additive glow layers that accumulate light like a tube instead of averaging to
+  grey, orbiting parallax starfield, trauma-based camera shake.
+* **Desktop and mobile from one project.** The game is authored at 1280x720 and letterboxed onto
+  any back buffer; mouse, touch, keyboard and gamepad all arrive through one device-neutral
+  input layer.
+* **Persistent profile.** Settings and progression as readable JSON, with a per-installation
+  GUID for support and future cloud features.
 
-## 🛠️ Technologies Used
+## Controls
 
-* **Language:** C#
-* **Engine/Framework:** MonoGame
-* **Architecture:** Shared Core Library (Cross-platform support for Desktop & Mobile)
+| | |
+|---|---|
+| Aim | Move the pointer / touch |
+| Fire | Hold left button / hold touch |
+| Navigate menus | Arrows, W/S, D-pad, or pointer |
+| Confirm | Enter, Space, A |
+| Back / pause | Escape, B, Android back |
 
-## 🚀 Getting Started
+## Technologies
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/arargame/SpiralWar.git
-   ```
-2. Open the `SpiralWar.sln` solution using Visual Studio or JetBrains Rider.
-3. Set the `SpiralWar.Desktop` project as the startup project.
-4. Build and Run the game to start surviving!
+* **Language:** C# (.NET 9)
+* **Framework:** MonoGame 3.8
+* **Architecture:** shared project (`SpiralWar.Shared`) driving platform head projects
 
-## 🤝 Contribution & Maintenance
+## Getting started
 
-This project is meticulously organized where shared logic and game entities reside in the `SpiralWar.Shared` project, with specialized clients branching out. 
+```bash
+git clone https://github.com/arargames/SpiralWar.git
+```
+
+1. Open `SpiralWar.sln` in Visual Studio or Rider.
+2. Set `SpiralWar.Desktop` as the startup project.
+3. Build and run.
+
+## Project layout
+
+```
+SpiralWar.Shared/     all gameplay, rendering, audio and UI
+  Core/               pooling, config, input, virtual viewport
+  Audio/              procedural synthesizer and sound bank
+  Levels/             the 100 level curve
+  Entities/           player, snake, rings, bullets, supplies, particles
+  Rendering/          primitives, neon, HUD, draw context
+  Screens/            screen stack and every screen
+  Systems/            collision, bullets, supplies, particles, shake
+SpiralWar.Desktop/    Windows head project
+docs/                 technical documentation - read before changing an area
+```
+
+## Documentation
+
+Detailed technical notes live in [`docs/`](docs/README.md): design goals, architecture, the full
+level table and its arithmetic, the supply drop table, every sound recipe, the rendering
+approach and the persistence format.
+
+## Contributing
+
+Code, comments and commit messages are English. SOLID, DRY and YAGNI are taken seriously here.
+Before working on an area, read its document in `docs/`; after finishing, update it.

@@ -6,28 +6,68 @@
     <SharedGUID>{A5C5D2B0-3F7E-4E8A-B123-9D6C45F87A12}</SharedGUID>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Entry point -->
     <Compile Include="$(MSBuildThisFileDirectory)SpiralWarGame.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)GameConstants.cs" />
+    <!-- Core -->
     <Compile Include="$(MSBuildThisFileDirectory)Core\IUpdatable.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\IRenderable.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\GameObject.cs" />
-    <Compile Include="$(MSBuildThisFileDirectory)Core\SaveManager.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Sprite.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\SaveManager.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\ViewportAdapter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Input\InputState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Pooling\IPoolable.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Pooling\ObjectPool.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Config\GameSettings.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Config\PlayerProfile.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Config\IConfigStore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Config\JsonConfigStore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Config\GameConfig.cs" />
+    <!-- Audio -->
+    <Compile Include="$(MSBuildThisFileDirectory)Audio\SoundId.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Audio\IAudioService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Audio\SoundBuilder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Audio\SoundBank.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Audio\AudioManager.cs" />
+    <!-- Levels -->
+    <Compile Include="$(MSBuildThisFileDirectory)Levels\LevelDefinition.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Levels\ILevelProvider.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Levels\LevelDesigner.cs" />
+    <!-- Entities -->
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Entity.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Enemy.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Player.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Bullet.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\SnakeSegment.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Snake.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\SupplyType.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Supply.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Particle.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\FloatingText.cs" />
+    <!-- Rendering -->
     <Compile Include="$(MSBuildThisFileDirectory)Rendering\PrimitiveDrawer.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Rendering\NeonRenderer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\DrawContext.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\Starfield.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\HudRenderer.cs" />
+    <!-- Screens -->
     <Compile Include="$(MSBuildThisFileDirectory)Screens\IScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\MenuButton.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\BaseScreen.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Screens\ScreenManager.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Screens\MenuScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\SettingsScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\CreditsScreen.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Screens\PauseScreen.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Screens\GameScreen.cs" />
+    <!-- Systems -->
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\CollisionMath.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\CollisionSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\BulletSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\SupplySystem.cs" />
-    <Compile Include="$(MSBuildThisFileDirectory)Systems\CollisionSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\ParticleSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\FloatingTextSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\CameraShake.cs" />
   </ItemGroup>
 </Project>

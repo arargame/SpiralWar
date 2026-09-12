@@ -1,109 +1,215 @@
 using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
-using Microsoft.Xna.Framework.Input;
+using SpiralWar.Core.Input;
 using SpiralWar.Rendering;
 
 namespace SpiralWar.Entities
 {
     /// <summary>
-    /// Ekran merkezinde sabit duran, mouse ile dönen, ateş eden oyuncu.
+    /// The ship. It never moves — it is bolted to the core of the arena and only rotates —
+    /// so every decision the player makes is about WHERE to aim and WHICH ring to kill next.
+    ///
+    /// Two independent, timed weapon boosts stack:
+    ///   T (triple)   three tight shots
+    ///   D (diffused) a wide cone
+    ///   T + D        a seven-shot fan, the strongest state in the game
+    /// Both are granted by supplies and expire on their own, which keeps the ship's baseline
+    /// honest and makes carrier rings worth prioritising.
     /// </summary>
     public sealed class Player : Entity
     {
-        public float Rotation          { get; private set; }
-        public float CurrentFireCooldown { get; private set; }
-        public int   BulletDamage      { get; private set; }
+        public float Rotation { get; private set; }
+        public int BulletDamage { get; private set; }
+        public float FireCooldown { get; private set; }
 
         private float _cooldownTimer;
-        private bool  _fireRateBoosted;
-        private bool  _damageBoosted;
-        private float _fireRateBoostTimer;
-        private float _damageBoostTimer;
+        private float _tripleTimer;
+        private float _diffusedTimer;
+        private float _contactTimer;
+        private float _hurtFlash;
+        private float _enginePulse;
+
         private readonly Texture2D _pixel;
 
-        private static readonly Color PlayerColor = new Color(0, 220, 255);
+        private static readonly Color ShipColor = new Color(0, 220, 255);
 
-        // Oyuncunun ateş ettiği yönü ile birlikte tetiklenen event
-        public event EventHandler<float>? BulletFired; // float = rotation açısı
+        /// <summary>Raised when a volley leaves the barrel. The screen turns it into bullets.</summary>
+        public event EventHandler? Fired;
 
-        public bool IsFireRateBoosted  => _fireRateBoosted;
-        public bool IsDamageBoosted    => _damageBoosted;
-        public float FireRateTimeLeft  => _fireRateBoostTimer;
-        public float DamageBoostTimeLeft => _damageBoostTimer;
+        public bool IsTripleActive => _tripleTimer > 0f;
+        public bool IsDiffusedActive => _diffusedTimer > 0f;
+        public float TripleTimeLeft => _tripleTimer;
+        public float DiffusedTimeLeft => _diffusedTimer;
+        public float HurtFlash => _hurtFlash;
 
-        public Player(Texture2D pixel) : base(1) // snapshot HP (ölüm = yılan merkeze ulaştı)
+        /// <summary>Largest volley this ship can currently emit. Sizes the caller's buffer.</summary>
+        public static int MaxShotsPerVolley => GameConstants.DiffusedTripleCount;
+
+        public Player(Texture2D pixel) : base(GameConstants.PlayerMaxHealth)
         {
             _pixel = pixel;
-            CurrentFireCooldown = GameConstants.DefaultFireCooldown;
-            BulletDamage        = GameConstants.DefaultBulletDamage;
+            FireCooldown = GameConstants.DefaultFireCooldown;
+            BulletDamage = GameConstants.DefaultBulletDamage;
             SetPosition(GameConstants.ScreenWidth / 2f, GameConstants.ScreenHeight / 2f);
+        }
+
+        /// <summary>Restores the ship for a fresh level without reallocating it.</summary>
+        public void ResetForLevel(bool restoreHealth)
+        {
+            if (restoreHealth) ResetHealth(GameConstants.PlayerMaxHealth);
+            _cooldownTimer = 0f;
+            _tripleTimer = 0f;
+            _diffusedTimer = 0f;
+            _contactTimer = 0f;
+            _hurtFlash = 0f;
+            Activate();
+        }
+
+        /// <summary>
+        /// Drives aim and fire from the device-neutral input state, so the same code runs on
+        /// a mouse and on a touchscreen.
+        /// </summary>
+        public void Update(GameTime gameTime, InputState input)
+        {
+            if (!IsAlive) return;
+
+            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+
+            // Aim at the pointer.
+            Vector2 toPointer = input.PointerPosition - Position;
+            if (toPointer.LengthSquared() > 1f)
+                Rotation = MathF.Atan2(toPointer.Y, toPointer.X);
+
+            // Fire.
+            if (_cooldownTimer > 0f) _cooldownTimer -= dt;
+            if (input.FireHeld && _cooldownTimer <= 0f)
+            {
+                _cooldownTimer = FireCooldown;
+                Fired?.Invoke(this, EventArgs.Empty);
+            }
+
+            TickTimers(dt);
+
+            _enginePulse = MathF.Sin((float)gameTime.TotalGameTime.TotalSeconds * 11f) * 0.5f + 0.5f;
         }
 
         public override void Update(GameTime gameTime)
         {
-            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+            // Input-free overload kept so Player still satisfies GameObject. The screen always
+            // calls the InputState overload.
+            TickTimers((float)gameTime.ElapsedGameTime.TotalSeconds);
+        }
 
-            // Mouse yönüne döndür
-            var mouse = Mouse.GetState();
-            var dir   = new Vector2(mouse.X, mouse.Y) - Position;
-            if (dir.LengthSquared() > 1f)
-                Rotation = MathF.Atan2(dir.Y, dir.X);
+        private void TickTimers(float dt)
+        {
+            if (_tripleTimer > 0f) _tripleTimer -= dt;
+            if (_diffusedTimer > 0f) _diffusedTimer -= dt;
+            if (_contactTimer > 0f) _contactTimer -= dt;
+            if (_hurtFlash > 0f) _hurtFlash -= dt / GameConstants.PlayerHurtFlashTime;
+            if (_hurtFlash < 0f) _hurtFlash = 0f;
+        }
 
-            // Ateş cooldown
-            if (_cooldownTimer > 0f) _cooldownTimer -= dt;
+        // ── Weapon pattern ─────────────────────────────────────────────────
 
-            // Sol tık → ateş
-            if (mouse.LeftButton == ButtonState.Pressed && _cooldownTimer <= 0f)
+        /// <summary>
+        /// Writes the absolute angle of every shot in this volley into <paramref name="buffer"/>
+        /// and returns how many were written. Buffer must hold <see cref="MaxShotsPerVolley"/>.
+        /// </summary>
+        public int GetShotAngles(float[] buffer)
+        {
+            if (buffer == null || buffer.Length == 0) return 0;
+
+            bool triple = IsTripleActive;
+            bool diffused = IsDiffusedActive;
+
+            if (triple && diffused)
+                return Fan(buffer, GameConstants.DiffusedTripleCount, GameConstants.DiffusedSpreadRadians);
+
+            if (diffused)
+                return Fan(buffer, GameConstants.DiffusedBulletCount, GameConstants.DiffusedSpreadRadians);
+
+            if (triple)
+                return Fan(buffer, 3, GameConstants.TripleSpreadRadians);
+
+            buffer[0] = Rotation;
+            return 1;
+        }
+
+        /// <summary>Spreads <paramref name="count"/> shots evenly across ±halfAngle.</summary>
+        private int Fan(float[] buffer, int count, float halfAngle)
+        {
+            if (count > buffer.Length) count = buffer.Length;
+            if (count <= 1)
             {
-                float effectiveCooldown = _fireRateBoosted
-                    ? CurrentFireCooldown * GameConstants.FireRateBoostMultiplier
-                    : CurrentFireCooldown;
-                _cooldownTimer = effectiveCooldown;
-                BulletFired?.Invoke(this, Rotation);
+                buffer[0] = Rotation;
+                return 1;
             }
 
-            // Boost süreleri
-            UpdateBoosts(dt);
+            float step = halfAngle * 2f / (count - 1);
+            for (int i = 0; i < count; i++)
+                buffer[i] = Rotation - halfAngle + step * i;
+
+            return count;
         }
 
-        private void UpdateBoosts(float dt)
+        /// <summary>True when the current volley should use the wider, lower fire sound.</summary>
+        public bool UsesWideFireSound => IsTripleActive || IsDiffusedActive;
+
+        // ── Supplies ───────────────────────────────────────────────────────
+
+        public void ApplyTripleFire() => _tripleTimer = GameConstants.TripleFireDuration;
+
+        public void ApplyDiffusedFire() => _diffusedTimer = GameConstants.DiffusedFireDuration;
+
+        // ── Damage ─────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Applies contact damage from an overlapping ring, but only once per
+        /// <see cref="GameConstants.ContactTickInterval"/>. Without that gate, six rings
+        /// touching the ship at once would delete the health bar in a single frame and the
+        /// player would never see what killed them.
+        /// </summary>
+        /// <returns>Damage actually applied, or 0 when the gate rejected it.</returns>
+        public int TakeContactDamage()
         {
-            if (_fireRateBoosted)
-            {
-                _fireRateBoostTimer -= dt;
-                if (_fireRateBoostTimer <= 0f) _fireRateBoosted = false;
-            }
-            if (_damageBoosted)
-            {
-                _damageBoostTimer -= dt;
-                if (_damageBoostTimer <= 0f)
-                {
-                    _damageBoosted = false;
-                    BulletDamage   = GameConstants.DefaultBulletDamage;
-                }
-            }
+            if (!IsAlive) return 0;
+            if (_contactTimer > 0f) return 0;
+
+            _contactTimer = GameConstants.ContactTickInterval;
+            int applied = TakeDamage(GameConstants.ContactDamagePerTick);
+            if (applied > 0) _hurtFlash = 1f;
+            return applied;
         }
 
-        public void ApplyFireRateBoost()
+        /// <summary>Unblockable damage — the head reaching the core.</summary>
+        public void Obliterate()
         {
-            _fireRateBoosted    = true;
-            _fireRateBoostTimer = GameConstants.SupplyBoostDuration;
+            if (!IsAlive) return;
+            _hurtFlash = 1f;
+            TakeDamage(CurrentHealth);
         }
 
-        public void ApplyDamageBoost()
+        public override int Heal(int amount)
         {
-            _damageBoosted    = true;
-            _damageBoostTimer = GameConstants.SupplyBoostDuration;
-            BulletDamage      = GameConstants.DefaultBulletDamage + GameConstants.DamageBoostAmount;
+            int applied = base.Heal(amount);
+            return applied;
         }
+
+        // ── Presentation ───────────────────────────────────────────────────
 
         public Vector2 GetFireDirection() =>
             new Vector2(MathF.Cos(Rotation), MathF.Sin(Rotation));
 
+        /// <summary>Muzzle position, so bullets leave the nose instead of the hub.</summary>
+        public Vector2 GetMuzzlePosition()
+            => Position + GetFireDirection() * (GameConstants.PlayerSize * 0.85f);
+
         public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
         {
-            NeonRenderer.DrawNeonPlayer(spriteBatch, _pixel, Position, Rotation, PlayerColor);
+            if (!IsActive) return;
+            NeonRenderer.DrawNeonPlayer(spriteBatch, _pixel, Position, Rotation,
+                ShipColor, _enginePulse, _hurtFlash);
         }
     }
 }

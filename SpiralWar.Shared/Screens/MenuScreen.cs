@@ -1,239 +1,137 @@
 using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
-using Microsoft.Xna.Framework.Graphics;
-using Microsoft.Xna.Framework.Input;
-using SpiralWar.Rendering;
 using SpiralWar.Core;
+using SpiralWar.Core.Config;
+using SpiralWar.Rendering;
 
 namespace SpiralWar.Screens
 {
     /// <summary>
-    /// Ana menü ekranı — NEW GAME ve QUIT butonları.
-    /// Neon cyberpunk stili, pulsing başlık.
+    /// Root screen. It is the only screen that can empty the stack, so "back" from anywhere
+    /// else always has somewhere to land.
     /// </summary>
-    public sealed class MenuScreen : IScreen
+    public sealed class MenuScreen : BaseScreen
     {
-        private readonly ScreenManager _manager;
-        private SpriteFont? _titleFont;
-        private SpriteFont? _menuFont;
-        private Texture2D?  _pixel;
+        private int _savedLevel = 1;
+        private bool _hasProgress;
 
-        private int   _selectedIndex;    // 0: En üst buton
-        private int   _maxIndex;
-        private int   _savedLevel;
+        private const int IndexContinue = 0;
 
-        private float _pulse;
-        private float _titlePulse;
+        public MenuScreen(ScreenManager manager) : base(manager) { }
 
-        private KeyboardState _prevKeys;
-        private MouseState    _prevMouse;
+        public override void LoadContent(ContentManager content) => RebuildButtons();
 
-        // Buton alanları (draw sırasında hesaplanır)
-        private Rectangle _btnContinue;
-        private Rectangle _btnNewGame;
-        private Rectangle _btnQuit;
-
-        private static readonly Color NeonCyan = new Color(0, 220, 255);
-        private static readonly Color NeonPink = new Color(255, 0,  160);
-
-        public MenuScreen(ScreenManager manager) => _manager = manager;
-
-        public void LoadContent(ContentManager content)
+        public override void Enter()
         {
-            _titleFont = _manager.TitleFont;
-            _menuFont  = _manager.GameFont;
-            _pixel     = _manager.Pixel;
-            
+            base.Enter();
+            RebuildButtons();
+        }
+
+        private void RebuildButtons()
+        {
             _savedLevel = SaveManager.LoadLevel();
-            _maxIndex   = _savedLevel > 1 ? 2 : 1;
-            _selectedIndex = 0;
+            _hasProgress = _savedLevel > 1;
+
+            Buttons.Clear();
+
+            // CONTINUE always occupies row 0 — it is just disabled on a fresh profile. Keeping
+            // the row order stable means muscle memory survives between sessions.
+            Buttons.Add(new MenuButton("CONTINUE",
+                _hasProgress ? $"LEVEL {_savedLevel} / {GameConstants.MaxLevel}" : "NO RUN IN PROGRESS")
+            {
+                Enabled = _hasProgress
+            });
+
+            Buttons.Add(new MenuButton("NEW GAME", "START FROM LEVEL 1"));
+            Buttons.Add(new MenuButton("SETTINGS", "AUDIO  -  VISUALS"));
+            Buttons.Add(new MenuButton("CREDITS & SUPPORT", "ARAR GAMES"));
+            Buttons.Add(new MenuButton("QUIT"));
+
+            SelectedIndex = _hasProgress ? IndexContinue : 1;
         }
 
-        public void Update(GameTime gameTime)
+        protected override void OnButtonActivated(int index)
         {
-            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
-            _pulse      = (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 3.0) * 0.5f + 0.5f;
-            _titlePulse = (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 1.5) * 0.5f + 0.5f;
-
-            var keyboard = Keyboard.GetState();
-            var mouse    = Mouse.GetState();
-
-            // Klavye navigasyon
-            if (WasJustPressed(keyboard, _prevKeys, Keys.Up)   ||
-                WasJustPressed(keyboard, _prevKeys, Keys.W))
-                _selectedIndex = (_selectedIndex - 1 + (_maxIndex + 1)) % (_maxIndex + 1);
-
-            if (WasJustPressed(keyboard, _prevKeys, Keys.Down)  ||
-                WasJustPressed(keyboard, _prevKeys, Keys.S))
-                _selectedIndex = (_selectedIndex + 1) % (_maxIndex + 1);
-
-            // Mouse hover
-            if (_savedLevel > 1)
+            switch (index)
             {
-                if (_btnContinue.Contains(mouse.Position)) _selectedIndex = 0;
-                if (_btnNewGame.Contains(mouse.Position))  _selectedIndex = 1;
-                if (_btnQuit.Contains(mouse.Position))     _selectedIndex = 2;
-            }
-            else
-            {
-                if (_btnNewGame.Contains(mouse.Position)) _selectedIndex = 0;
-                if (_btnQuit.Contains(mouse.Position))    _selectedIndex = 1;
-            }
+                case 0: // CONTINUE
+                    if (_hasProgress)
+                        Manager.Replace(new GameScreen(Manager, _savedLevel));
+                    break;
 
-            // Onay
-            bool confirm =
-                WasJustPressed(keyboard, _prevKeys, Keys.Enter) ||
-                WasJustPressed(keyboard, _prevKeys, Keys.Space) ||
-                (mouse.LeftButton == ButtonState.Pressed &&
-                 _prevMouse.LeftButton == ButtonState.Released &&
-                 (_btnNewGame.Contains(mouse.Position) || _btnQuit.Contains(mouse.Position) || (_savedLevel > 1 && _btnContinue.Contains(mouse.Position))));
+                case 1: // NEW GAME
+                    SaveManager.ClearSave();
+                    Manager.Replace(new GameScreen(Manager, 1));
+                    break;
 
-            if (confirm)
-            {
-                if (_savedLevel > 1)
-                {
-                    if (_selectedIndex == 0) // Continue
-                        _manager.Replace(new GameScreen(_manager, _savedLevel));
-                    else if (_selectedIndex == 1) // New Game
-                    {
-                        SaveManager.ClearSave();
-                        _manager.Replace(new GameScreen(_manager, 1));
-                    }
-                    else // Quit
-                        Environment.Exit(0);
-                }
-                else
-                {
-                    if (_selectedIndex == 0) // New Game
-                    {
-                        SaveManager.ClearSave();
-                        _manager.Replace(new GameScreen(_manager, 1));
-                    }
-                    else // Quit
-                        Environment.Exit(0);
-                }
+                case 2: // SETTINGS
+                    Manager.Push(new SettingsScreen(Manager));
+                    break;
+
+                case 3: // CREDITS & SUPPORT
+                    Manager.Push(new CreditsScreen(Manager));
+                    break;
+
+                default: // QUIT
+                    GameConfig.SaveAll();
+                    Environment.Exit(0);
+                    break;
             }
-
-            _prevKeys  = keyboard;
-            _prevMouse = mouse;
         }
 
-        public void Draw(SpriteBatch spriteBatch, GameTime gameTime)
+        public override void Draw(DrawContext ctx, GameTime gameTime)
         {
-            if (_pixel == null) return;
+            Color accent = Manager.Levels.GetLevel(_savedLevel).ThemeColor;
 
-            int cx = GameConstants.ScreenWidth  / 2;
-            int cy = GameConstants.ScreenHeight / 2;
+            DrawBackdrop(ctx, accent);
+            DrawCoreOrnament(ctx, gameTime, accent);
 
-            // Arka plan grid
-            NeonRenderer.DrawGrid(spriteBatch, _pixel,
-                GameConstants.ScreenWidth, GameConstants.ScreenHeight, 60);
+            float titleY = ctx.Height * 0.22f;
+            DrawTitle(ctx, GameConstants.GameTitle, titleY, NeonCyan, 1f);
 
-            // Başlık
-            DrawTitle(spriteBatch, cx, cy - 120);
+            ctx.UseHud();
+            ctx.DrawTextCentered(ctx.GameFont, GameConstants.StudioName,
+                new Vector2(ctx.Width * 0.5f, titleY + 44f), DimText, 0.8f);
 
-            // Butonlar
-            int startY = cy + 20;
-            if (_savedLevel > 1)
-            {
-                DrawButton(spriteBatch, $"CONTINUE (LVL {_savedLevel})", cx, startY, _selectedIndex == 0, out _btnContinue);
-                DrawButton(spriteBatch, "NEW GAME", cx, startY + 70, _selectedIndex == 1, out _btnNewGame);
-                DrawButton(spriteBatch, "QUIT", cx, startY + 140, _selectedIndex == 2, out _btnQuit);
-            }
-            else
-            {
-                DrawButton(spriteBatch, "NEW GAME", cx, startY, _selectedIndex == 0, out _btnNewGame);
-                DrawButton(spriteBatch, "QUIT", cx, startY + 70, _selectedIndex == 1, out _btnQuit);
-            }
+            float firstRow = ctx.Height * 0.45f;
+            float spacing = MathF.Min(66f, (ctx.Height - firstRow - 70f) / Buttons.Count);
+            DrawButtons(ctx, firstRow, spacing, NeonPink);
 
-            // Alt bilgi
-            DrawSubtitle(spriteBatch, cx, cy + 180);
+            DrawFooter(ctx, "AIM WITH THE POINTER   -   HOLD TO FIRE   -   [ESC] BACK");
         }
 
-        private void DrawTitle(SpriteBatch sb, int cx, int y)
+        /// <summary>
+        /// A slow phantom spiral behind the menu — the same shape the player is about to
+        /// fight, so the main menu already teaches what the game is.
+        /// </summary>
+        private void DrawCoreOrnament(DrawContext ctx, GameTime gameTime, Color accent)
         {
-            if (_titleFont == null || _pixel == null) return;
+            ctx.UseWorld();
 
-            string title  = "SPIRAL WAR";
-            var    size   = _titleFont.MeasureString(title);
-            var    pos    = new Vector2(cx - size.X / 2f, y);
-            float  pScale = 1f + _titlePulse * 0.04f;
+            float time = (float)gameTime.TotalGameTime.TotalSeconds;
+            Vector2 center = new Vector2(ctx.Width * 0.5f, ctx.Height * 0.5f);
 
-            // Glow layers
-            for (int i = 4; i >= 1; i--)
+            const int points = 150;
+            float turns = 3.2f;
+
+            Vector2 previous = center;
+            for (int i = 1; i <= points; i++)
             {
-                float a = 0.10f / i;
-                var   gPos = pos + new Vector2(-i, -i);
-                sb.DrawString(_titleFont, title, gPos, NeonCyan * a,
-                    0f, Vector2.Zero, pScale, SpriteEffects.None, 0f);
+                float t = i / (float)points;
+                float angle = t * MathF.Tau * turns + time * 0.18f;
+                float radius = t * (ctx.Height * 0.62f);
+
+                var p = new Vector2(
+                    center.X + MathF.Cos(angle) * radius,
+                    center.Y + MathF.Sin(angle) * radius);
+
+                float alpha = 0.05f + t * 0.05f;
+                PrimitiveDrawer.DrawLine(ctx.Batch, ctx.Pixel, previous, p, accent * alpha, 1.5f);
+                previous = p;
             }
 
-            sb.DrawString(_titleFont, title, pos, NeonCyan,
-                0f, Vector2.Zero, pScale, SpriteEffects.None, 0f);
-
-            // İnce çizgi altında
-            int lineY = (int)(y + size.Y * pScale + 6);
-            PrimitiveDrawer.DrawLine(sb, _pixel,
-                new Vector2(cx - 160, lineY), new Vector2(cx + 160, lineY),
-                NeonCyan * 0.6f, 1);
+            NeonRenderer.DrawCoreRing(ctx.Batch, ctx.Pixel, center, 0.15f, time, accent);
         }
-
-        private void DrawButton(SpriteBatch sb, string text, int cx, int y,
-            bool selected, out Rectangle bounds)
-        {
-            if (_menuFont == null || _pixel == null) { bounds = Rectangle.Empty; return; }
-
-            var   size    = _menuFont.MeasureString(text);
-            float padX    = 40f;
-            float padY    = 14f;
-            int   bw      = (int)(size.X + padX * 2);
-            int   bh      = (int)(size.Y + padY * 2);
-            int   bx      = cx - bw / 2;
-            int   by      = y  - bh / 2;
-            bounds = new Rectangle(bx, by, bw, bh);
-
-            Color accent = selected ? NeonPink : new Color(40, 55, 80);
-            Color textC  = selected ? Color.White : new Color(120, 150, 180);
-
-            // Arka plan
-            PrimitiveDrawer.DrawFilledRect(sb, _pixel, bounds,
-                selected ? new Color(30, 5, 25) : new Color(10, 15, 28));
-
-            // Glow kenarlık (seçiliyse)
-            if (selected)
-            {
-                for (int i = 3; i >= 1; i--)
-                {
-                    var expanded = new Rectangle(bx - i * 2, by - i * 2,
-                                                 bw + i * 4, bh + i * 4);
-                    PrimitiveDrawer.DrawHollowRect(sb, _pixel, expanded,
-                        NeonPink * (0.12f / i), 1);
-                }
-            }
-
-            PrimitiveDrawer.DrawHollowRect(sb, _pixel, bounds, accent, 1);
-
-            // Yazı
-            var textPos = new Vector2(cx - size.X / 2f, y - size.Y / 2f);
-            if (selected)
-            {
-                sb.DrawString(_menuFont, text, textPos + Vector2.One, NeonPink * 0.6f);
-            }
-            sb.DrawString(_menuFont, text, textPos, textC);
-        }
-
-        private void DrawSubtitle(SpriteBatch sb, int cx, int y)
-        {
-            if (_menuFont == null) return;
-            string hint = "[ MOUSE AIM + LEFT CLICK TO FIRE ]";
-            var size    = _menuFont.MeasureString(hint);
-            sb.DrawString(_menuFont, hint,
-                new Vector2(cx - size.X / 2f, y),
-                new Color(50, 80, 100));
-        }
-
-        private static bool WasJustPressed(KeyboardState curr, KeyboardState prev, Keys key)
-            => curr.IsKeyDown(key) && prev.IsKeyUp(key);
     }
 }
