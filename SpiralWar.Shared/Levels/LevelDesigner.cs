@@ -8,68 +8,85 @@ namespace SpiralWar.Levels
     ///
     /// DESIGN CONTRACT (full rationale in docs/level-design.md)
     /// --------------------------------------------------------
-    /// 1. A bullet always deals 1 damage. Every hit visibly ticks the number on a ring down
-    ///    by one, so the player can always read exactly how much work is left. Difficulty is
-    ///    expressed as more rings, tougher rings and a faster spiral — never as an invisible
-    ///    damage multiplier.
-    /// 2. The spiral is the fail timer. SpiralDuration is always ~45% longer than the time the
-    ///    curve expects a competent player to need, so a clean run finishes with slack and a
-    ///    sloppy run gets eaten.
-    /// 3. Difficulty steps are smooth (sub-linear power curves), with three hard milestones
-    ///    that introduce a NEW rule rather than a bigger number:
-    ///       level 25  armored rings (halved damage)
-    ///       level 50  the surge — the spiral accelerates noticeably as it closes
-    ///       level 75  regeneration — rings you stop shooting heal back
-    /// 4. Every tenth level is a boss: ~30% more rings, tougher, faster, extra armor.
-    /// 5. Each tier of ten levels gets its own accent colour so progress is legible at a glance.
+    /// 1. **Every level is three minutes.** The spiral always needs
+    ///    <see cref="GameConstants.LevelDurationSeconds"/> to reach the core, at every level,
+    ///    boss or not. A fail timer the player can internalise is worth more than one that
+    ///    shifts under them, and it makes the health pool a straightforward consequence:
+    ///    pool = expected damage output x expected clear time.
+    /// 2. **The health pool is the design variable; the form splits it.** The curve decides how
+    ///    many hit points a level is worth. The level's SnakeForm then decides whether that is
+    ///    spent on a swarm of fragile rings or a short column of enormous ones. Count factor and
+    ///    health factor are inverses, so switching form changes feel, not length.
+    /// 3. **Numbers stay readable.** A base bullet still deals 1. Critical hits, power attacks
+    ///    and acid can exceed that, but every one of them is announced on screen in its own
+    ///    colour, so the player can always account for what came off a ring.
+    /// 4. **New rules arrive with a banner, never silently:**
+    ///       level 10  neon dynamite rings start appearing
+    ///       level 25  armored rings (double plating)
+    ///       level 50  the surge - the spiral accelerates as it closes
+    ///       level 75  regeneration - rings you stop shooting heal back
+    ///       every 20  a new SnakeForm
+    /// 5. Every tenth level is a boss: a longer snake, tougher rings and far more dynamite.
     /// </summary>
     public sealed class LevelDesigner : ILevelProvider
     {
         // ── Curve constants (all tunable; keep docs/level-design.md in sync) ──
-        private const int   BaseSegmentCount   = 22;
-        private const int   ExtraSegmentCount  = 78;    // added across the whole campaign
-        private const float SegmentCountCurve  = 0.75f; // <1 => generous early, steep late
 
-        // Ring hit points stay SMALL on purpose (see the design contract above): a ring should
-        // always show a one- or low-two-digit number so each hit visibly ticks it down.
-        // Difficulty comes from ring COUNT, not from inflating these.
-        private const int   BaseMinHealth      = 2;
-        private const int   ExtraMinHealth     = 2;
-        private const int   BaseMaxHealth      = 5;
-        private const int   ExtraMaxHealth     = 5;
+        /// <summary>
+        /// Total hit points a level is worth, ARMOR INCLUDED. This is the number the whole
+        /// curve is built around: pool = expected damage output x expected clear time.
+        /// </summary>
+        private const float BasePool = 700f;
 
-        private const float BaseClearSeconds   = 18f;
-        private const float ExtraClearSeconds  = 46f;
-        private const float ClearSecondsCurve  = 0.90f;
+        /// <summary>Extra hit points added across the whole campaign.</summary>
+        private const float ExtraPool = 4200f;
 
-        /// <summary>How much slack the fail timer gives over the intended clear time.</summary>
-        private const float SpiralSlack        = 1.45f;
+        /// <summary>
+        /// Linear on purpose. The pool has to track the player's rising damage output, and that
+        /// output rises roughly linearly with the supply and diamond economy a level provides.
+        /// A sub-linear curve here made levels 6 to 9 - after the pool has grown but before
+        /// dynamite unlocks at 10 - the only unwinnable stretch in the campaign.
+        /// </summary>
+        private const float PoolCurve = 1.00f;
 
-        private const float BaseAngularSpeed   = 0.45f;
-        private const float ExtraAngularSpeed  = 0.55f;
+        /// <summary>Reference ring count (SnakeForm.Column) at level 1 and at level 100.</summary>
+        private const float BaseRingCount = 75f;
+        private const float ExtraRingCount = 45f;
+        private const float RingCountCurve = 0.70f;
 
-        private const float BaseInwardAccel    = 0.25f;
-        private const float ExtraInwardAccel   = 0.45f;
+        /// <summary>Health spread around the average, so a snake is not uniform.</summary>
+        private const float HealthSpreadLow = 0.60f;
+        private const float HealthSpreadHigh = 1.45f;
+
+        private const float BaseInwardAccel = 0.25f;
+        private const float ExtraInwardAccel = 0.45f;
+
+        /// <summary>Late levels wind the spiral a little tighter than early ones.</summary>
+        private const float AngularLevelBoost = 0.25f;
 
         // Milestones
-        public const int ArmorMilestone  = 25;
-        public const int SurgeMilestone  = 50;
-        public const int RegenMilestone  = 75;
+        public const int DynamiteMilestone = 10;
+        public const int ArmorMilestone = 25;
+        public const int SurgeMilestone = 50;
+        public const int RegenMilestone = 75;
 
-        // An armored ring carries DOUBLE hit points (see SnakeSegment). Each point of armor
-        // chance therefore adds that fraction again to the level's total health pool, so this
-        // ceiling is a real difficulty lever and not just decoration.
         private const float MaxArmoredChance = 0.22f;
-        private const float SurgeAccelBonus  = 0.35f;
+        private const float MaxDynamiteChance = 0.075f;
+        private const float SurgeAccelBonus = 0.35f;
 
-        // Boss multipliers
-        private const float BossSegmentMultiplier = 1.30f;
-        private const float BossHealthMultiplier  = 1.35f;
-        private const float BossAngularMultiplier = 1.15f;
-        // A boss carries ~30% more rings AND tougher ones, so it needs proportionally more
-        // time on the clock or it stops being a challenge and becomes an impossibility.
-        private const float BossDurationBonus     = 1.30f;
-        private const float BossArmorBonus        = 0.10f;
+        // Drop chances per ring. These are generous because a three minute level needs a
+        // steady supply economy; see docs/supply-system.md.
+        private const float BaseSupplyChance = 0.26f;
+        private const float ExtraSupplyChance = 0.06f;
+        private const float BaseDiamondChance = 0.08f;
+        private const float ExtraDiamondChance = 0.07f;
+
+        // Boss multipliers. The health bump is small on purpose: a boss already carries 25%
+        // more rings AND an extra 10% armor chance, and all three compound into the pool.
+        private const float BossRingMultiplier = 1.25f;
+        private const float BossHealthMultiplier = 1.08f;
+        private const float BossDynamiteBonus = 0.05f;
+        private const float BossArmorBonus = 0.10f;
 
         /// <summary>One accent colour per tier of ten levels.</summary>
         private static readonly Color[] TierColors =
@@ -120,76 +137,116 @@ namespace SpiralWar.Levels
             bool isBoss = level % 10 == 0;
             int tier = Math.Min(TierColors.Length - 1, (level - 1) / 10);
 
-            // 1. How much snake.
-            int segmentCount = (int)MathF.Round(
-                BaseSegmentCount + ExtraSegmentCount * MathF.Pow(t, SegmentCountCurve));
+            SnakeForm form = SnakeFormInfo.ForLevel(level);
+            SnakeFormInfo formInfo = SnakeFormInfo.Of(form);
 
-            // 2. How tough each ring is.
-            int minHealth = (int)MathF.Round(BaseMinHealth + ExtraMinHealth * t);
-            int maxHealth = (int)MathF.Round(BaseMaxHealth + ExtraMaxHealth * t);
+            // 1. How much total health the level is worth, armor included.
+            float pool = BasePool + ExtraPool * MathF.Pow(t, PoolCurve);
 
-            // 3. How long the player should need, and how long they actually get.
-            float targetClear = BaseClearSeconds + ExtraClearSeconds * MathF.Pow(t, ClearSecondsCurve);
-            float spiralDuration = targetClear * SpiralSlack;
+            // 2. How that pool is split, which is entirely the form's business.
+            float referenceCount = BaseRingCount + ExtraRingCount * MathF.Pow(t, RingCountCurve);
+            int segmentCount = (int)MathF.Round(referenceCount * formInfo.RingCountFactor);
 
-            // 4. How fast it whirls. Late levels spin hard while closing steadily —
-            //    that reads as pressure without turning the level into a coin flip.
-            float angularSpeed = BaseAngularSpeed + ExtraAngularSpeed * t;
-            float inwardAccel = BaseInwardAccel + ExtraInwardAccel * t;
+            if (isBoss)
+            {
+                segmentCount = (int)MathF.Round(segmentCount * BossRingMultiplier);
+                pool *= BossHealthMultiplier;
+            }
 
-            // 5. Milestone rules.
+            if (segmentCount < 8) segmentCount = 8;
+
+            // 3. Ring composition. Armor has to be resolved BEFORE health, because an armored
+            //    ring carries double hit points: deriving the average without accounting for
+            //    that silently inflates the real pool by up to 40% at the top of the campaign,
+            //    which is the difference between a hard level and an impossible one.
             float armoredChance = 0f;
             if (level >= ArmorMilestone)
             {
-                float armorProgress = (level - ArmorMilestone) /
-                                      (float)(GameConstants.MaxLevel - ArmorMilestone);
-                armoredChance = Clamp(armorProgress * MaxArmoredChance, 0f, MaxArmoredChance);
+                float progress = (level - ArmorMilestone) /
+                                 (float)(GameConstants.MaxLevel - ArmorMilestone);
+                armoredChance = Clamp(progress * MaxArmoredChance, 0f, MaxArmoredChance);
             }
 
-            if (level >= SurgeMilestone)
-                inwardAccel += SurgeAccelBonus;
+            float dynamiteChance = 0f;
+            if (level >= DynamiteMilestone)
+            {
+                float progress = (level - DynamiteMilestone) /
+                                 (float)(GameConstants.MaxLevel - DynamiteMilestone);
+                // Starts at a third of the ceiling so the rule is visible the moment it unlocks.
+                dynamiteChance = Clamp(
+                    MaxDynamiteChance * (0.35f + 0.65f * progress), 0f, MaxDynamiteChance);
+            }
 
-            bool regen = level >= RegenMilestone;
-            float regenDelay = 3.5f;
-            float regenPerSecond = regen
-                ? 1f + (level - RegenMilestone) / 12f
-                : 0f;
+            float supplyChance = BaseSupplyChance + ExtraSupplyChance * t;
+            float diamondChance = BaseDiamondChance + ExtraDiamondChance * t;
 
-            // 6. Boss pass.
-            string title;
             if (isBoss)
             {
-                segmentCount = (int)MathF.Round(segmentCount * BossSegmentMultiplier);
-                maxHealth = (int)MathF.Round(maxHealth * BossHealthMultiplier);
-                angularSpeed *= BossAngularMultiplier;
-                spiralDuration *= BossDurationBonus;
+                dynamiteChance = Clamp(dynamiteChance + BossDynamiteBonus, 0f, 0.16f);
                 armoredChance = Clamp(armoredChance + BossArmorBonus, 0f, 0.40f);
-                title = level == GameConstants.MaxLevel ? "FINAL CORE" : "BOSS";
-            }
-            else
-            {
-                title = TierNames[tier];
             }
 
-            if (maxHealth < minHealth) maxHealth = minHealth;
+            // 4. Health per ring, so that count x average x (1 + armor) lands back on the pool.
+            float averageHealth = pool / (segmentCount * (1f + armoredChance));
+            int minHealth = Math.Max(1, (int)MathF.Round(averageHealth * HealthSpreadLow));
+            int maxHealth = Math.Max(minHealth, (int)MathF.Round(averageHealth * HealthSpreadHigh));
+
+            // 5. How tightly the spiral winds.
+            //
+            // The radial gap between two turns has to stay a few ring-heights wide or the
+            // turns overlap and the arena becomes unreadable. Bigger rings therefore get a
+            // looser spiral, which is why this is derived rather than authored.
+            float spawnRadius = ComputeSpawnRadius();
+            float turnGap = formInfo.RingHeight * formInfo.TurnGapInRingHeights;
+            float revolutions = spawnRadius / turnGap;
+            float angularSpeed = revolutions * MathF.Tau / GameConstants.LevelDurationSeconds;
+            angularSpeed *= 1f + AngularLevelBoost * t;
+
+            float inwardAccel = BaseInwardAccel + ExtraInwardAccel * t;
+            if (level >= SurgeMilestone) inwardAccel += SurgeAccelBonus;
+
+            // 6. Milestone rules.
+            bool regen = level >= RegenMilestone;
+            float regenDelay = 3.5f;
+            float regenPerSecond = regen ? 1f + (level - RegenMilestone) / 12f : 0f;
+
+            string title = isBoss
+                ? (level == GameConstants.MaxLevel ? "FINAL CORE" : "BOSS")
+                : TierNames[tier];
 
             return new LevelDefinition(
                 index: level,
                 tier: tier,
                 isBoss: isBoss,
                 title: title,
+                form: form,
+                isFormDebut: SnakeFormInfo.IsFormDebutLevel(level),
                 segmentCount: segmentCount,
                 minSegmentHealth: minHealth,
                 maxSegmentHealth: maxHealth,
                 angularSpeed: angularSpeed,
-                spiralDuration: spiralDuration,
+                spiralDuration: GameConstants.LevelDurationSeconds,
                 inwardAcceleration: inwardAccel,
                 armoredChance: armoredChance,
+                dynamiteChance: dynamiteChance,
+                supplyCarryChance: supplyChance,
+                diamondCarryChance: diamondChance,
                 regenerationEnabled: regen,
                 regenerationDelay: regenDelay,
                 regenerationPerSecond: regenPerSecond,
                 themeColor: TierColors[tier],
-                targetClearSeconds: targetClear);
+                targetClearSeconds: GameConstants.TargetClearSeconds);
+        }
+
+        /// <summary>
+        /// Radius the head spawns at: just beyond the screen corner, so the snake always
+        /// arrives from off-stage. Shared with <see cref="Entities.Snake"/>.
+        /// </summary>
+        public static float ComputeSpawnRadius()
+        {
+            float halfW = GameConstants.ScreenWidth / 2f + 110f;
+            float halfH = GameConstants.ScreenHeight / 2f + 110f;
+            return MathF.Sqrt(halfW * halfW + halfH * halfH);
         }
 
         /// <summary>
@@ -199,9 +256,12 @@ namespace SpiralWar.Levels
         public static string GetMilestoneBanner(LevelDefinition level)
         {
             if (level.Index == GameConstants.MaxLevel) return "THE FINAL CORE";
+            if (level.IsFormDebut)
+                return "NEW FORM: " + level.FormInfo.Name + " - " + level.FormInfo.Tagline;
             if (level.Index == RegenMilestone) return "NEW: RINGS REGENERATE IF YOU LET THEM BREATHE";
             if (level.Index == SurgeMilestone) return "NEW: THE SPIRAL SURGES AS IT CLOSES";
             if (level.Index == ArmorMilestone) return "NEW: ARMORED RINGS CARRY DOUBLE PLATING";
+            if (level.Index == DynamiteMilestone) return "NEW: NEON DYNAMITE - SHOOT IT, CLEAR THE CLUSTER";
             if (level.IsBoss) return "BOSS SPIRAL";
             return string.Empty;
         }

@@ -7,16 +7,17 @@ using SpiralWar.Rendering;
 namespace SpiralWar.Entities
 {
     /// <summary>
-    /// One ring of the snake — the thing the player actually shoots.
+    /// One ring of the snake - the thing the player actually shoots.
     ///
     /// Everything about this class exists to answer "did my shot land?" without the player
-    /// having to think about it:
-    ///   * the hit number drops by exactly the damage dealt,
-    ///   * the ring flashes white for 120 ms,
-    ///   * it is knocked backwards along its own axis and springs back,
-    ///   * armored rings answer with a different flash colour AND a different sound.
-    /// A ring that is carrying a supply wears the glyph it will drop, so the player can decide
-    /// which part of the snake is worth the ammunition.
+    /// having to think about it: the number drops by exactly the damage dealt, the ring flashes,
+    /// it is knocked backwards along its own axis, and armored, dynamite and acid-covered rings
+    /// all look and sound different from a plain one.
+    ///
+    /// A ring is at most ONE special thing. It is a dynamite charge, or it carries a supply, or
+    /// it carries a diamond, or it is plain - never two at once. Armor is the single exception
+    /// because it is a property of the plating rather than a payload. That restraint is what
+    /// keeps a wall of eighty rings readable at speed.
     /// </summary>
     public sealed class SnakeSegment : Enemy
     {
@@ -24,8 +25,18 @@ namespace SpiralWar.Entities
         public bool IsHead { get; private set; }
         public bool IsArmored { get; private set; }
 
-        /// <summary>Supply released on death, or null when this ring is empty.</summary>
+        /// <summary>True when this ring is a neon dynamite charge. Carries no payload.</summary>
+        public bool IsDynamite { get; private set; }
+
+        /// <summary>Supply released on death, or null.</summary>
         public SupplyType? CarriedSupply { get; private set; }
+
+        /// <summary>Diamond released on death, or null.</summary>
+        public DiamondType? CarriedDiamond { get; private set; }
+
+        /// <summary>Drawn and collided size, scaled by the level's snake form.</summary>
+        public int Width { get; }
+        public int Height { get; }
 
         /// <summary>Velocity estimated from the last movement, used to eject drops.</summary>
         public Vector2 Velocity { get; private set; }
@@ -33,11 +44,20 @@ namespace SpiralWar.Entities
         /// <summary>0..1 white-out driving the hit flash.</summary>
         public float HitFlash { get; private set; }
 
+        /// <summary>Acid stacks currently eating this ring.</summary>
+        public int AcidStacks { get; private set; }
+
+        /// <summary>Raised when acid eats hit points, so the screen can show the number.</summary>
+        public event EventHandler<int>? AcidTicked;
+
         private float _glowPulse;
         private float _badgePulse;
-        private float _knock;              // px pushed back along the ring's own axis
+        private float _fuse;
+        private float _knock;
         private float _timeSinceHit;
-        private float _regenCarry;         // fractional hit points waiting to become whole
+        private float _regenCarry;
+        private float _acidTimer;
+        private float _acidRemaining;
 
         private readonly SpriteFont _font;
         private readonly Texture2D _pixel;
@@ -58,6 +78,7 @@ namespace SpiralWar.Entities
 
         private static readonly Color ArmorColor = new Color(190, 210, 230);
         private static readonly Color HeadColor = new Color(255, 45, 45);
+        private static readonly Color DynamiteColor = new Color(255, 120, 0);
 
         /// <summary>Armored rings carry this multiple of a normal ring's hit points.</summary>
         public const int ArmorHealthMultiplier = 2;
@@ -70,6 +91,9 @@ namespace SpiralWar.Entities
             _font = font;
             _pixel = pixel;
 
+            Width = level.SegmentWidth;
+            Height = level.SegmentHeight;
+
             _regenEnabled = !isHead && level.RegenerationEnabled;
             _regenDelay = level.RegenerationDelay;
             _regenPerSecond = level.RegenerationPerSecond;
@@ -80,33 +104,38 @@ namespace SpiralWar.Entities
                 return;
             }
 
+            RollPayload(level, rng);
+
+            // Armor is expressed as DOUBLE HIT POINTS, not as a damage reduction. A base bullet
+            // deals 1, so halving incoming damage would round to "1" and do nothing at all - a
+            // rule the player could never see working. Doubling the printed number is honest.
+            int health = RollHealth(level, rng);
+            if (IsArmored) health *= ArmorHealthMultiplier;
+            ResetHealth(health);
+        }
+
+        /// <summary>
+        /// Decides what this ring is. Order matters and is the drop table: dynamite first
+        /// (it is exclusive and the most dramatic), then a diamond, then a supply.
+        /// </summary>
+        private void RollPayload(LevelDefinition level, Random rng)
+        {
+            if (rng.NextDouble() < level.DynamiteChance)
+            {
+                IsDynamite = true;
+                NeonColor = DynamiteColor;
+                return;
+            }
+
+            if (rng.NextDouble() < level.DiamondCarryChance)
+                CarriedDiamond = DiamondTypeInfo.Roll(rng);
+            else if (rng.NextDouble() < level.SupplyCarryChance)
+                CarriedSupply = SupplyTypeInfo.Roll(rng);
+
             IsArmored = rng.NextDouble() < level.ArmoredChance;
             NeonColor = IsArmored
                 ? ArmorColor
                 : Palette[rng.Next(Palette.Length)];
-
-            // Armor is expressed as DOUBLE HIT POINTS, not as a damage reduction.
-            // A bullet always deals exactly 1 damage, so halving incoming damage would round
-            // to "1" and do nothing at all — a rule the player could never see working.
-            // Doubling the number printed on the ring is honest and immediately legible.
-            int health = RollHealth(level, rng);
-            if (IsArmored) health *= ArmorHealthMultiplier;
-            ResetHealth(health);
-
-            CarriedSupply = RollSupply(rng);
-        }
-
-        /// <summary>
-        /// Independent per-type rolls, in a fixed order. A ring can carry at most one supply,
-        /// so the first roll that succeeds wins — see docs/supply-system.md for why the
-        /// effective rates are 20% / 16% / 12.8% rather than a flat 20% each.
-        /// </summary>
-        private static SupplyType? RollSupply(Random rng)
-        {
-            if (rng.NextDouble() < GameConstants.SupplyChanceTriple) return SupplyType.TripleFire;
-            if (rng.NextDouble() < GameConstants.SupplyChanceDiffused) return SupplyType.DiffusedFire;
-            if (rng.NextDouble() < GameConstants.SupplyChanceHealth) return SupplyType.HealthPack;
-            return null;
         }
 
         private static int RollHealth(LevelDefinition level, Random rng)
@@ -140,6 +169,20 @@ namespace SpiralWar.Entities
             return applied;
         }
 
+        /// <summary>
+        /// Adds acid stacks and refreshes their clock. Acid is the green diamond's whole point:
+        /// it keeps eating a ring after the player has moved their aim somewhere else, which is
+        /// what makes it worth having against a long snake even though its raw numbers are low.
+        /// </summary>
+        public void ApplyAcid(int stacks)
+        {
+            if (stacks <= 0 || !IsAlive) return;
+
+            AcidStacks = Math.Min(GameConstants.AcidMaxStacks, AcidStacks + stacks);
+            _acidRemaining = GameConstants.AcidDuration;
+            if (_acidTimer <= 0f) _acidTimer = GameConstants.AcidTickInterval;
+        }
+
         public override void Update(GameTime gameTime)
         {
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
@@ -148,13 +191,16 @@ namespace SpiralWar.Entities
             _glowPulse = (float)Math.Sin(totalSeconds * 4.0) * 0.5f + 0.5f;
             _badgePulse = (float)Math.Sin(totalSeconds * 6.5 + Position.X * 0.01) * 0.5f + 0.5f;
 
+            if (IsDynamite)
+                _fuse += dt * GameConstants.DynamiteFuseSpeed;
+
             if (HitFlash > 0f)
             {
                 HitFlash -= dt / GameConstants.HitFlashDuration;
                 if (HitFlash < 0f) HitFlash = 0f;
             }
 
-            // Knock springs back quickly — it should read as a jolt, not as displacement.
+            // Knock springs back quickly - it should read as a jolt, not as displacement.
             if (_knock > 0f)
             {
                 _knock -= dt * 42f;
@@ -162,7 +208,35 @@ namespace SpiralWar.Entities
             }
 
             _timeSinceHit += dt;
+
+            TickAcid(dt);
             TickRegeneration(dt);
+        }
+
+        private void TickAcid(float dt)
+        {
+            if (AcidStacks <= 0 || !IsAlive) return;
+
+            _acidRemaining -= dt;
+            if (_acidRemaining <= 0f)
+            {
+                AcidStacks = 0;
+                _acidTimer = 0f;
+                return;
+            }
+
+            _acidTimer -= dt;
+            if (_acidTimer > 0f) return;
+
+            _acidTimer = GameConstants.AcidTickInterval;
+
+            // Two stacks are worth one point per tick, so a level 3 green diamond burns for
+            // three a tick rather than six - strong, but not a replacement for aiming.
+            int damage = Math.Max(GameConstants.AcidDamagePerTick,
+                                  AcidStacks / 2 * GameConstants.AcidDamagePerTick);
+
+            int applied = base.TakeDamage(damage);
+            if (applied > 0) AcidTicked?.Invoke(this, applied);
         }
 
         private void TickRegeneration(float dt)
@@ -170,6 +244,7 @@ namespace SpiralWar.Entities
             if (!_regenEnabled || !IsAlive) return;
             if (CurrentHealth >= MaxHealth) return;
             if (_timeSinceHit < _regenDelay) return;
+            if (AcidStacks > 0) return; // acid keeps a ring from knitting back together
 
             _regenCarry += _regenPerSecond * dt;
             if (_regenCarry < 1f) return;
@@ -195,19 +270,36 @@ namespace SpiralWar.Entities
 
             Vector2 drawPos = DrawPosition;
 
-            if (CarriedSupply.HasValue)
+            if (IsDynamite)
+            {
+                NeonRenderer.DrawDynamiteRing(spriteBatch, _pixel, drawPos,
+                    Width, Height, Rotation, _fuse, _glowPulse, HitFlash);
+                DrawHealthLabel(spriteBatch, drawPos, Color.White);
+                return;
+            }
+
+            Color? markerColor = CarriedDiamond.HasValue
+                ? DiamondTypeInfo.ColorOf(CarriedDiamond.Value)
+                : CarriedSupply.HasValue
+                    ? SupplyTypeInfo.ColorOf(CarriedSupply.Value)
+                    : (Color?)null;
+
+            if (markerColor.HasValue)
             {
                 NeonRenderer.DrawSupplyMarker(spriteBatch, _pixel, drawPos,
-                    GameConstants.SegmentWidth, GameConstants.SegmentHeight, Rotation,
-                    SupplyTypeInfo.ColorOf(CarriedSupply.Value), _badgePulse);
+                    Width, Height, Rotation, markerColor.Value, _badgePulse);
             }
 
             NeonRenderer.DrawNeonSegment(spriteBatch, _pixel, drawPos,
-                GameConstants.SegmentWidth, GameConstants.SegmentHeight, Rotation,
+                Width, Height, Rotation,
                 NeonColor,
                 glowIntensity: 0.75f + _glowPulse * 0.45f,
                 flash: HitFlash,
                 armored: IsArmored);
+
+            if (AcidStacks > 0)
+                NeonRenderer.DrawAcidOverlay(spriteBatch, _pixel, drawPos,
+                    Width, Height, Rotation, AcidStacks, _badgePulse);
 
             if (!IsHead)
                 DrawLabels(spriteBatch, drawPos);
@@ -217,6 +309,8 @@ namespace SpiralWar.Entities
         {
             if (_font == null) return;
 
+            bool hasBadge = CarriedSupply.HasValue || CarriedDiamond.HasValue;
+
             float cos = MathF.Cos(Rotation);
             float sin = MathF.Sin(Rotation);
 
@@ -224,33 +318,61 @@ namespace SpiralWar.Entities
                 new Vector2(drawPos.X + x * cos - y * sin,
                             drawPos.Y + x * sin + y * cos);
 
-            // Hit points, slightly behind centre so the supply badge has room in front.
-            string hp = CurrentHealth.ToString();
-            Vector2 hpSize = _font.MeasureString(hp);
-            Vector2 hpAnchor = CarriedSupply.HasValue ? Local(-7f, 0f) : drawPos;
-            Vector2 hpPos = hpAnchor - hpSize * 0.5f;
+            // Hit points, slightly behind centre so the badge has room in front.
+            float offset = Width * 0.15f;
+            Vector2 hpAnchor = hasBadge ? Local(-offset, 0f) : drawPos;
 
             Color hpColor = HitFlash > 0.02f
                 ? Color.White
-                : Color.Lerp(NeonColor, Color.White, 0.7f);
+                : AcidStacks > 0
+                    ? Color.Lerp(NeonColor, new Color(150, 255, 90), 0.6f)
+                    : Color.Lerp(NeonColor, Color.White, 0.7f);
 
-            sb.DrawString(_font, hp, hpPos + new Vector2(-1f, 0f), hpColor * 0.3f);
-            sb.DrawString(_font, hp, hpPos + new Vector2(1f, 0f), hpColor * 0.3f);
-            sb.DrawString(_font, hp, hpPos, hpColor);
+            DrawCenteredGlyph(sb, CurrentHealth.ToString(), hpAnchor, hpColor, 1f);
 
-            if (!CarriedSupply.HasValue) return;
+            if (!hasBadge) return;
 
-            // Supply glyph in front of the number.
-            SupplyType type = CarriedSupply.Value;
-            string glyph = SupplyTypeInfo.GlyphOf(type);
-            Color glyphColor = Color.Lerp(SupplyTypeInfo.ColorOf(type), Color.White,
-                0.35f + _badgePulse * 0.35f);
+            string glyph;
+            Color glyphColor;
 
-            Vector2 glyphSize = _font.MeasureString(glyph);
-            Vector2 glyphPos = Local(13f, 0f) - glyphSize * 0.5f;
+            if (CarriedDiamond.HasValue)
+            {
+                DiamondType type = CarriedDiamond.Value;
+                glyph = DiamondTypeInfo.GlyphOf(type);
+                glyphColor = Color.Lerp(DiamondTypeInfo.ColorOf(type), Color.White,
+                    0.35f + _badgePulse * 0.35f);
+            }
+            else
+            {
+                SupplyType type = CarriedSupply!.Value;
+                glyph = SupplyTypeInfo.GlyphOf(type);
+                glyphColor = Color.Lerp(SupplyTypeInfo.ColorOf(type), Color.White,
+                    0.35f + _badgePulse * 0.35f);
+            }
 
-            sb.DrawString(_font, glyph, glyphPos + new Vector2(-1f, 0f), glyphColor * 0.4f);
-            sb.DrawString(_font, glyph, glyphPos, glyphColor);
+            DrawCenteredGlyph(sb, glyph, Local(Width * 0.27f, 0f), glyphColor, 0.9f);
+        }
+
+        private void DrawHealthLabel(SpriteBatch sb, Vector2 drawPos, Color color)
+        {
+            if (_font == null || IsHead) return;
+            DrawCenteredGlyph(sb, CurrentHealth.ToString(), drawPos, color, 1f);
+        }
+
+        private void DrawCenteredGlyph(SpriteBatch sb, string text, Vector2 center,
+                                       Color color, float scale)
+        {
+            if (_font == null || string.IsNullOrEmpty(text)) return;
+
+            Vector2 size = _font.MeasureString(text) * scale;
+            Vector2 pos = center - size * 0.5f;
+
+            sb.DrawString(_font, text, pos + new Vector2(-1f, 0f), color * 0.3f,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_font, text, pos + new Vector2(1f, 0f), color * 0.3f,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_font, text, pos, color,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
     }
 }

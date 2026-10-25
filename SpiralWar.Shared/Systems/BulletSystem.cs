@@ -11,9 +11,9 @@ namespace SpiralWar.Systems
     /// Owns the bullet pool and nothing else (SRP).
     ///
     /// Every bullet in the game is pre-allocated at construction. Firing is then a stack pop
-    /// and a field write, so a seven-shot diffused volley at 5 volleys a second produces zero
-    /// garbage — which is what keeps the frame time flat during the heaviest moments instead
-    /// of spiking exactly when the player can least afford it.
+    /// and a field write, so a nine-shot volley at six volleys a second produces zero garbage -
+    /// which is what keeps the frame time flat during the heaviest moments instead of spiking
+    /// exactly when the player can least afford it.
     /// </summary>
     public sealed class BulletSystem : IUpdatable, IRenderable
     {
@@ -32,16 +32,16 @@ namespace SpiralWar.Systems
         }
 
         /// <summary>
-        /// Fires one bullet. Returns false when the pool is exhausted, in which case the shot
-        /// is silently dropped — a missing bullet at 512 concurrent projectiles is invisible,
-        /// a mid-frame allocation is not.
+        /// Fires one bullet from a fully resolved shot. Returns false when the pool is
+        /// exhausted, in which case the shot is silently dropped - a missing bullet at 640
+        /// concurrent projectiles is invisible, a mid-frame allocation is not.
         /// </summary>
-        public bool Spawn(Vector2 origin, Vector2 direction, int damage, Color tint)
+        public bool Spawn(Vector2 origin, Vector2 direction, in ShotSpec spec, Color tint)
         {
             Bullet? bullet = _pool.Rent();
             if (bullet == null) return false;
 
-            bullet.Launch(origin, direction, damage, tint);
+            bullet.Launch(origin, direction, spec, tint);
             ShotsFired++;
             return true;
         }

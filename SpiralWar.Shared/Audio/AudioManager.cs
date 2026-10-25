@@ -6,12 +6,13 @@ namespace SpiralWar.Audio
 {
     /// <summary>
     /// Runtime side of the audio system: owns the synthesized buffers, applies the user's
-    /// volume settings and — importantly — limits how often each sound may retrigger.
+    /// volume settings and - importantly - limits how often each sound may retrigger.
     ///
     /// Voice throttling is the difference between "satisfying" and "unbearable". A diffused
-    /// volley fires seven bullets in one frame; without the per-sound minimum interval that
-    /// would be seven stacked copies of the same waveform, which is both 7x too loud and
-    /// phase-cancels into a harsh click.
+    /// volley fires nine bullets in one frame; without the per-sound minimum interval that
+    /// would be nine stacked copies of the same waveform, which is both nine times too loud and
+    /// phase-cancels into a harsh click. A six-charge dynamite chain has the same problem an
+    /// octave lower.
     /// </summary>
     public sealed class AudioManager : IAudioService
     {
@@ -62,9 +63,24 @@ namespace SpiralWar.Audio
             _minInterval[(int)SoundId.SegmentHit]      = 0.022f; // several hits read as one texture
             _minInterval[(int)SoundId.SegmentArmorHit] = 0.030f;
             _minInterval[(int)SoundId.SegmentDestroy]  = 0.040f;
+            _minInterval[(int)SoundId.CriticalHit]     = 0.055f;
             _minInterval[(int)SoundId.SupplyDrop]      = 0.070f;
+            _minInterval[(int)SoundId.DiamondDrop]     = 0.070f;
             _minInterval[(int)SoundId.PlayerHurt]      = 0.220f;
             _minInterval[(int)SoundId.MenuMove]        = 0.050f;
+
+            // A chain reaction can set off half a dozen charges inside two frames. Spacing the
+            // links out is what turns that into a cascade you can hear count, rather than one
+            // clipped roar.
+            _minInterval[(int)SoundId.DynamiteBlast]   = 0.090f;
+            _minInterval[(int)SoundId.DynamiteChain]   = 0.070f;
+
+            // Acid ticks on many rings at once, twice a second each. Without a hard floor this
+            // becomes a constant fizz under everything else.
+            _minInterval[(int)SoundId.AcidTick]        = 0.110f;
+
+            _minInterval[(int)SoundId.MissileLaunch]   = 0.090f;
+            _minInterval[(int)SoundId.MissileImpact]   = 0.060f;
         }
 
         public void ApplySettings()
@@ -108,7 +124,7 @@ namespace SpiralWar.Audio
             }
             catch (Exception)
             {
-                // Voice limit reached at the platform level — dropping the sound is correct.
+                // Voice limit reached at the platform level - dropping the sound is correct.
             }
         }
 
@@ -120,16 +136,16 @@ namespace SpiralWar.Audio
 
         public void StopAll()
         {
-            // One-shots created via SoundEffect.Play are managed by the platform; there is
-            // no handle to stop them individually. Muting the master bus is the honest
-            // equivalent and is restored by ApplySettings.
+            // One-shots created via SoundEffect.Play are managed by the platform; there is no
+            // handle to stop them individually. Muting the master bus is the honest equivalent
+            // and is restored by ApplySettings.
             try { SoundEffect.MasterVolume = 0f; }
             catch (Exception) { /* no audio device */ }
         }
 
         /// <summary>
-        /// Converts a world X position into a stereo pan value so hits on the left of the
-        /// arena are heard on the left.
+        /// Converts a world X position into a stereo pan value so hits on the left of the arena
+        /// are heard on the left.
         /// </summary>
         public static float PanFor(float virtualX)
         {
@@ -138,8 +154,7 @@ namespace SpiralWar.Audio
             return Clamp(pan, -1f, 1f) * 0.65f; // 0.65 keeps it subtle rather than gimmicky
         }
 
-        private static double NowSeconds() =>
-            Environment.TickCount64 / 1000.0;
+        private static double NowSeconds() => Environment.TickCount64 / 1000.0;
 
         private static float Clamp01(float v) => Clamp(v, 0f, 1f);
 

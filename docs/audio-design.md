@@ -119,6 +119,53 @@ Initialization is wrapped in try/catch: **a machine with no audio device must st
 play the game**. If the bank fails to build, `_initialized` stays false and every `Play` call
 becomes a no-op.
 
+## v1.2 additions
+
+Eleven sounds were added for dynamite, missiles, diamonds and status effects.
+
+| Id | Length | Recipe summary | Peak |
+|---|---|---|---|
+| `CriticalHit` | 0.22s | 2640 + 3960 Hz glassy ping over the normal impact | 0.58 |
+| `DynamiteBlast` | 0.85s | 150->34 Hz sub drop + long filtered noise + FM crack, echo | 0.95 |
+| `DynamiteChain` | 0.46s | Shorter, drier, 15% quieter version of the blast | 0.80 |
+| `AcidTick` | 0.09s | High-passed noise fizz + a faint 1700 Hz tail | 0.26 |
+| `MissileLaunch` | 0.26s | Rising hiss with a 220->520 Hz thump underneath | 0.45 |
+| `MissileImpact` | 0.34s | Compact version of the blast | 0.78 |
+| `DiamondDrop` | 0.26s | 2093 + 3136 Hz glass chime | 0.38 |
+| `DiamondPickup` | 0.46s | Crystalline major triad with a long echoed tail | 0.60 |
+| `DiamondLevelUp` | 0.56s | The pickup plus an extra octave on top | 0.64 |
+| `StasisStart` | 0.70s | 1760->440 Hz descending shimmer | 0.60 |
+| `StasisEnd` | 0.42s | The same shimmer running back up | 0.44 |
+
+### Design notes
+
+**A critical plays ON TOP of the normal impact** rather than replacing it, so a crit sounds
+like the same hit with something extra. Replacing it would have made criticals read as a
+different weapon rather than as a better outcome from the same one.
+
+**Dynamite chains get their own shorter, quieter sound.** A six-charge cascade fires inside two
+frames. With one sound at one volume it is a single clipped roar; with a distinct chain sound
+and a 70ms floor, it is something you can hear count.
+
+**Acid needed the harshest throttle in the bank (110ms).** It ticks twice a second on every
+burning ring at once, and at level 3 that can be a dozen rings - without a hard floor it
+becomes a constant fizz sitting under everything else in the mix.
+
+**The stasis pair is pitch direction as information.** Falling pitch means time just got
+slower; rising pitch means it is back. Neither needs a label.
+
+### New throttles
+
+| Sound | Minimum interval |
+|---|---|
+| `DynamiteBlast` | 90 ms |
+| `DynamiteChain` | 70 ms |
+| `AcidTick` | 110 ms |
+| `CriticalHit` | 55 ms |
+| `MissileLaunch` | 90 ms |
+| `MissileImpact` | 60 ms |
+| `DiamondDrop` | 70 ms |
+
 ## Ideas not yet implemented
 
 - A slow generative drone keyed to the tier accent colour and the danger value.

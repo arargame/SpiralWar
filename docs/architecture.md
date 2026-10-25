@@ -151,6 +151,46 @@ InputState.FireHeld
                   -> SupplySystem.ReleaseFrom  drops the ring's carried supply
 ```
 
+## v1.2 additions to the class map
+
+```
+Levels/
+  SnakeForm, SnakeFormInfo        the five shapes and their count/health/scale factors
+
+Entities/
+  PlayerLoadout                   every timed effect + the stats derived from them
+  DiamondType(+Info), Diamond     the four neon diamonds
+  Missile                         pooled homing projectile
+
+Systems/
+  DiamondSystem                   twin of SupplySystem for the stones
+  MissileSystem                   steering, retargeting and detonation
+  DetonationSystem                dynamite blasts and the iterative chain
+```
+
+`PlayerLoadout` is the one worth explaining. Weapon supplies, four diamond stacks and the
+stasis field are all "a timer plus what that timer is worth". Keeping them in one class means
+there is exactly one answer to "what is the fire cooldown right now" instead of four classes
+each holding a piece of it, and `Player` gets to stay about aiming and firing.
+
+### Event flow of a dynamite chain
+
+```
+CollisionSystem        bullet kills a dynamite ring
+  -> Snake.SegmentKilled
+    -> GameScreen      sees IsDynamite, calls DetonationSystem.Enqueue (depth 0)
+GameScreen             after collisions: DetonationSystem.Resolve(snake, level)
+  -> dequeue blast     apply falloff damage to every ring in radius
+    -> Snake.SegmentKilled for each ring that dies
+      -> GameScreen    another dynamite? Enqueue at currentDepth + 1
+  -> Detonated event   GameScreen plays blast/chain sound, particles, shake
+  ... loop until the queue empties or the depth cap is hit
+```
+
+The loop is explicit and the depth is a plain number. Recursing through the kill event instead
+would mean a hundred-ring cascade unwinding on the call stack inside a collision loop, with
+every handler running at an unpredictable depth.
+
 ## Adding something new
 
 - **A new sound:** add to `SoundId`, write a recipe in `SoundBank`, give it a throttle in

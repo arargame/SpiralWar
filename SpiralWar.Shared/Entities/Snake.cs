@@ -12,11 +12,14 @@ namespace SpiralWar.Entities
     /// head's history.
     ///
     /// The trail is indexed by ARC LENGTH, not by frame count. That matters more than it
-    /// sounds: the head's tangential speed collapses as the radius shrinks, so a
-    /// "N frames behind" rule makes the rings pile into each other near the core and stretch
-    /// apart at the rim. Spacing the rings by distance keeps the snake looking like one solid
-    /// object for the whole descent, and it also makes the collision boxes line up with what
-    /// the player sees.
+    /// sounds: the head's tangential speed collapses as the radius shrinks, so a "N frames
+    /// behind" rule makes the rings pile into each other near the core and stretch apart at the
+    /// rim. Spacing the rings by distance keeps the snake looking like one solid object for the
+    /// whole descent, and it also makes the collision boxes line up with what the player sees.
+    ///
+    /// <see cref="TimeScale"/> is how the stasis supply works. Scaling the time the spiral
+    /// integrates - rather than scaling its speed constants - means the fail timer, the danger
+    /// ring and the HUD countdown all stay consistent with each other for free.
     /// </summary>
     public sealed class Snake : GameObject
     {
@@ -24,11 +27,17 @@ namespace SpiralWar.Entities
         public IReadOnlyList<SnakeSegment> Segments => _segments;
         public LevelDefinition Level { get; }
 
-        /// <summary>True once the head has arrived at the core — the player has lost.</summary>
+        /// <summary>True once the head has arrived at the core - the player has lost.</summary>
         public bool HeadReachedCenter { get; private set; }
 
-        /// <summary>0 at the rim, 1 at the core. Drives the warning ring and the music-less tension.</summary>
+        /// <summary>0 at the rim, 1 at the core. Drives the warning ring and the HUD.</summary>
         public float Danger { get; private set; }
+
+        /// <summary>
+        /// Multiplier on how fast the spiral advances. 1 is normal; the stasis supply drops it
+        /// to <see cref="GameConstants.StasisTimeScale"/> for a few seconds.
+        /// </summary>
+        public float TimeScale { get; set; } = 1f;
 
         public int TotalSegmentCount { get; }
         public int AliveSegmentCount { get; private set; }
@@ -36,8 +45,8 @@ namespace SpiralWar.Entities
         /// <summary>Raised when a body ring is destroyed. Carries the ring so drops can spawn.</summary>
         public event EventHandler<SnakeSegment>? SegmentKilled;
 
-        /// <summary>Raised whenever a ring actually loses hit points. Payload: the ring and the amount.</summary>
-        public event EventHandler<SegmentDamageEventArgs>? SegmentDamaged;
+        /// <summary>Raised whenever acid eats hit points off a ring.</summary>
+        public event EventHandler<SegmentDamageEventArgs>? SegmentAcidTicked;
 
         private readonly List<SnakeSegment> _segments = new List<SnakeSegment>();
         private readonly List<Vector2> _trail = new List<Vector2>();
@@ -47,6 +56,7 @@ namespace SpiralWar.Entities
         private readonly float _startRadius;
         private readonly float _startAngle;
         private readonly float _segmentSpacing;
+        private readonly float _cullMargin;
         private readonly Random _rng;
 
         private float _elapsed;
@@ -58,14 +68,12 @@ namespace SpiralWar.Entities
             _rng = new Random(seed);
             _center = new Vector2(GameConstants.ScreenWidth / 2f, GameConstants.ScreenHeight / 2f);
 
-            // Spawn beyond the screen corner so the snake always arrives from off-stage.
-            float halfW = GameConstants.ScreenWidth / 2f + 110f;
-            float halfH = GameConstants.ScreenHeight / 2f + 110f;
-            _startRadius = MathF.Sqrt(halfW * halfW + halfH * halfH);
+            _startRadius = LevelDesigner.ComputeSpawnRadius();
             _currentRadius = _startRadius;
 
             _startAngle = (float)(_rng.NextDouble() * Math.Tau);
-            _segmentSpacing = GameConstants.SegmentWidth * 0.72f;
+            _segmentSpacing = level.SegmentSpacing;
+            _cullMargin = level.SegmentWidth + 40f;
 
             TotalSegmentCount = level.SegmentCount;
             AliveSegmentCount = TotalSegmentCount;
@@ -92,7 +100,7 @@ namespace SpiralWar.Entities
                 var segment = new SnakeSegment(isHead: false, level, font, pixel, _rng);
                 segment.MoveTo(spawn, 0f);
                 segment.Died += OnSegmentDied;
-                segment.Damaged += OnSegmentDamaged;
+                segment.AcidTicked += OnSegmentAcidTicked;
                 _segments.Add(segment);
             }
         }
@@ -107,22 +115,23 @@ namespace SpiralWar.Entities
             SegmentKilled?.Invoke(this, segment);
         }
 
-        private void OnSegmentDamaged(object? sender, int amount)
+        private void OnSegmentAcidTicked(object? sender, int amount)
         {
             if (sender is not SnakeSegment segment) return;
-            SegmentDamaged?.Invoke(this, new SegmentDamageEventArgs(segment, amount));
+            SegmentAcidTicked?.Invoke(this, new SegmentDamageEventArgs(segment, amount));
         }
 
         public override void Update(GameTime gameTime)
         {
             if (Head == null) return;
 
-            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+            float rawDt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+            float dt = rawDt * (TimeScale <= 0f ? 0f : TimeScale);
             _elapsed += dt;
 
             AdvanceHead(gameTime, dt);
             RecordTrail();
-            PlaceSegments(gameTime, dt);
+            PlaceSegments(gameTime, rawDt);
         }
 
         // ── Head motion ────────────────────────────────────────────────────
@@ -207,7 +216,7 @@ namespace SpiralWar.Entities
 
         // ── Body placement ─────────────────────────────────────────────────
 
-        private void PlaceSegments(GameTime gameTime, float dt)
+        private void PlaceSegments(GameTime gameTime, float rawDt)
         {
             int trailIndex = 1;
             float walked = 0f;
@@ -252,7 +261,7 @@ namespace SpiralWar.Entities
 
                 if (segment.IsAlive)
                 {
-                    segment.MoveTo(position, dt);
+                    segment.MoveTo(position, rawDt);
                     segment.UpdateRotation(rotation);
                 }
 
@@ -270,6 +279,53 @@ namespace SpiralWar.Entities
                 if (_segments[i].IsAlive) yield return _segments[i];
         }
 
+        /// <summary>
+        /// Fills <paramref name="results"/> with every live ring whose centre is inside
+        /// <paramref name="radius"/> of <paramref name="center"/>. Takes a caller-owned list so
+        /// a chain of dynamite blasts does not allocate once per detonation.
+        /// </summary>
+        public void CollectSegmentsInRadius(Vector2 center, float radius, List<SnakeSegment> results)
+        {
+            if (results == null) return;
+            results.Clear();
+
+            float radiusSquared = radius * radius;
+
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                SnakeSegment segment = _segments[i];
+                if (!segment.IsAlive) continue;
+
+                float dx = segment.Position.X - center.X;
+                float dy = segment.Position.Y - center.Y;
+                if (dx * dx + dy * dy <= radiusSquared)
+                    results.Add(segment);
+            }
+        }
+
+        /// <summary>Nearest live ring to a point, or null when the snake is cleared.</summary>
+        public SnakeSegment? FindNearestSegment(Vector2 point)
+        {
+            SnakeSegment? best = null;
+            float bestDistance = float.MaxValue;
+
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                SnakeSegment segment = _segments[i];
+                if (!segment.IsAlive) continue;
+
+                float dx = segment.Position.X - point.X;
+                float dy = segment.Position.Y - point.Y;
+                float distance = dx * dx + dy * dy;
+
+                if (distance >= bestDistance) continue;
+                bestDistance = distance;
+                best = segment;
+            }
+
+            return best;
+        }
+
         public bool IsCleared => AliveSegmentCount <= 0;
 
         public Vector2 Center => _center;
@@ -278,20 +334,16 @@ namespace SpiralWar.Entities
             ? float.MaxValue
             : Vector2.Distance(Head.Position, _center);
 
-        /// <summary>Seconds left before the head arrives, assuming the current pace holds.</summary>
+        /// <summary>Seconds left before the head arrives, at the current time scale.</summary>
         public float SecondsRemaining => MathF.Max(0f, Level.SpiralDuration - _elapsed);
 
-        /// <summary>
-        /// Margin around the canvas within which a ring is still drawn. Generous enough to
-        /// cover the glow halo of a ring whose centre has just left the view.
-        /// </summary>
-        private const float CullMargin = 70f;
+        // ── Draw ───────────────────────────────────────────────────────────
 
-        private static bool IsOnScreen(Vector2 position)
-            => position.X > -CullMargin &&
-               position.X < GameConstants.ScreenWidth + CullMargin &&
-               position.Y > -CullMargin &&
-               position.Y < GameConstants.ScreenHeight + CullMargin;
+        private bool IsOnScreen(Vector2 position)
+            => position.X > -_cullMargin &&
+               position.X < GameConstants.ScreenWidth + _cullMargin &&
+               position.Y > -_cullMargin &&
+               position.Y < GameConstants.ScreenHeight + _cullMargin;
 
         public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
         {
@@ -315,7 +367,7 @@ namespace SpiralWar.Entities
         }
     }
 
-    /// <summary>Payload for <see cref="Snake.SegmentDamaged"/>.</summary>
+    /// <summary>Payload for ring damage events that are not tied to a projectile.</summary>
     public sealed class SegmentDamageEventArgs : EventArgs
     {
         public SnakeSegment Segment { get; }

@@ -19,6 +19,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)Core\Input\InputState.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Pooling\IPoolable.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Pooling\ObjectPool.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Levels\SnakeForm.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Config\GameSettings.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Config\PlayerProfile.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Core\Config\IConfigStore.cs" />
@@ -34,6 +35,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)Levels\LevelDefinition.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Levels\ILevelProvider.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Levels\LevelDesigner.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\PlayerLoadout.cs" />
     <!-- Entities -->
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Entity.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Enemy.cs" />
@@ -42,7 +44,10 @@
     <Compile Include="$(MSBuildThisFileDirectory)Entities\SnakeSegment.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Snake.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\SupplyType.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\DiamondType.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Supply.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Diamond.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Entities\Missile.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\Particle.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Entities\FloatingText.cs" />
     <!-- Rendering -->
@@ -66,6 +71,9 @@
     <Compile Include="$(MSBuildThisFileDirectory)Systems\CollisionSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\BulletSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\SupplySystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\DiamondSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\MissileSystem.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Systems\DetonationSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\ParticleSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\FloatingTextSystem.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Systems\CameraShake.cs" />

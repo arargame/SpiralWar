@@ -4,7 +4,7 @@
 
 A single ship, bolted to the centre of a dark neon arena. A segmented snake spirals in from
 outside the screen. Every ring of that snake shows its own hit points. Destroy them all before
-the head reaches the core.
+the head reaches the core - you have exactly three minutes.
 
 The ship never moves. That is the whole design: there is no dodging, no positioning, no
 movement skill. Every decision the player makes is **which ring to shoot next, and with what**.
@@ -26,33 +26,52 @@ connects, five things happen in the same frame:
 A player should never have to ask "did that land?". If a change makes any of those five less
 legible, the change is wrong.
 
-**2. The numbers must stay readable.**
+**2. The numbers must stay accountable.**
 
-A bullet always deals exactly 1 damage, at every level, forever. Ring hit points stay in the
-2-14 range for the entire 100 level campaign. Difficulty comes from **more rings, tougher rings
-and a faster spiral**, never from an invisible damage multiplier. This is also why armor is
-expressed as double hit points rather than as a damage reduction - the player can see it.
+A BASE bullet always deals exactly 1 damage, at every level, forever.
 
-**3. Progression must be fair.**
+Critical hits, power attacks, acid, missiles and dynamite all exceed that, and every one of
+them announces itself: its own bullet colour, its own number colour, its own sound. The rule
+was never "the number is always 1" - it is **the player can always account for every point
+that came off a ring**. A white-hot bullet that prints a yellow 12 does not break that; an
+invisible multiplier would.
 
-The spiral is a fail timer, and it is always meaningfully longer than the time the curve
-expects a competent player to need. See [level-design.md](level-design.md) for the arithmetic.
-New rules are introduced at three milestones with an on-screen banner, never silently.
+Ring hit points stay in the 3-80 range for the entire 100 level campaign - always two digits,
+always printed on the ring. This is also why armor is expressed as double hit points rather
+than as a damage reduction: the player can see it.
 
-**4. It must run the same everywhere.**
+**3. Progression must be fair, and legible.**
+
+The spiral is a three minute fail timer, at every level, boss or not. The health pool is then a
+plain consequence: expected damage output x expected clear time. See
+[level-design.md](level-design.md) for the arithmetic and the verification.
+
+New rules are introduced with an on-screen banner, never silently. The snake's whole SHAPE
+changes five times across the campaign, so progress is something you can see rather than only
+something you can measure.
+
+**4. Choice over luck.**
+
+Carrier rings wear the glyph of what they will drop from the moment they appear. The player
+looks at the incoming spiral and decides what is worth the ammunition. A drop rolled at the
+moment of death would be a slot machine; a drop declared in advance is a decision.
+
+**5. It must run the same everywhere.**
 
 One shared project drives desktop and mobile. Input is device-neutral (`InputState`), the
 canvas is virtual and letterboxed (`ViewportAdapter`), and a finger and a mouse follow the same
 code path.
 
-**5. It must be readable six months from now.**
+**6. It must be readable six months from now.**
 
 Interfaces where a second implementation is plausible (`IAudioService`, `ILevelProvider`,
-`IConfigStore`, `IScreen`). One responsibility per class. Tuning values in
-`GameConstants` and `LevelDesigner`, not scattered through the code.
+`IConfigStore`, `IScreen`). One responsibility per class. Tuning values in `GameConstants`,
+`LevelDesigner` and `SnakeFormInfo`, not scattered through the code.
 
 ## Non-goals
 
+- 3D. It was tried in October 2026 ("AI Reposta") and did not improve the game; the branch is
+  parked in `git stash`. The neon 2D look is the identity.
 - Story, cutscenes, dialogue.
 - Ship movement or a second controllable unit.
 - Online anything. The player GUID exists so that cloud features *could* be added later; it is
@@ -62,16 +81,18 @@ Interfaces where a second implementation is plausible (`IAudioService`, `ILevelP
 
 ## Current state
 
-Implemented: the 100 level curve, boss levels, the three milestone rules, carrier rings and
-the T / D / + supplies, the ship's hull bar and contact damage, the procedural sound bank,
-bullet and particle pooling, oriented + swept collision, additive neon rendering, the screen
-stack with back navigation and fades, settings, credits & support, and the JSON profile with a
-per-installation GUID.
+Implemented: the 100 level three-minute campaign with five snake forms, boss levels, four
+milestone rules, carrier rings with six supplies and four diamonds, neon dynamite with chain
+detonation, homing missiles, the stasis field, the ship's hull and contact damage, the
+procedural sound bank, pooling throughout, oriented + swept collision, additive neon rendering,
+the screen stack with back navigation and fades, settings, credits & support, and the JSON
+profile with a per-installation GUID.
 
 Next candidates, in rough priority order:
 
 1. Android head project (the shared project is already mobile-ready; only the head is missing).
-2. A second weapon axis - something that rewards holding fire rather than spraying.
-3. Music: a slow generative drone keyed to the tier colour and the danger level.
-4. Per-level best times stored on the profile, shown on the level intro card.
-5. Localisation pass - all UI strings are currently inline English constants.
+2. Music: a slow generative drone keyed to the tier colour and the danger level.
+3. Per-level best times stored on the profile, shown on the level intro card.
+4. A meta-progression pass - diamonds banked between runs rather than only within a level.
+5. Localisation pass - all UI strings are currently inline English constants, and the
+   spritefonts are ASCII only.

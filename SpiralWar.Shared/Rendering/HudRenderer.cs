@@ -10,9 +10,8 @@ namespace SpiralWar.Rendering
     /// Everything drawn on top of the arena. Kept out of GameScreen so the screen can stay
     /// about game STATE and this file can stay about LAYOUT (SRP).
     ///
-    /// Layout is expressed as fractions of the virtual canvas wherever it can be, so the HUD
-    /// survives the letterboxing on any aspect ratio without a second set of coordinates for
-    /// phones.
+    /// Positions are fractions of the virtual canvas wherever they can be, so the HUD survives
+    /// the letterboxing on any aspect ratio without a second set of coordinates for phones.
     /// </summary>
     public sealed class HudRenderer
     {
@@ -20,12 +19,23 @@ namespace SpiralWar.Rendering
         private const float HealthBarWidth = 250f;
         private const float HealthBarHeight = 16f;
         private const int HealthTicks = 10;
+        private const float RowHeight = 26f;
 
         private static readonly Color HealthHigh = new Color(0, 255, 170);
         private static readonly Color HealthMid = new Color(255, 200, 0);
         private static readonly Color HealthLow = new Color(255, 60, 70);
         private static readonly Color LabelColor = new Color(96, 126, 156);
         private static readonly Color FaintColor = new Color(52, 74, 96);
+
+        /// <summary>Supplies in the order they are listed down the left edge.</summary>
+        private static readonly SupplyType[] TimedSupplies =
+        {
+            SupplyType.DoubleFire,
+            SupplyType.TripleFire,
+            SupplyType.DiffusedFire,
+            SupplyType.HomingMissile,
+            SupplyType.Stasis
+        };
 
         // ── Ship status, top left ──────────────────────────────────────────
 
@@ -60,50 +70,93 @@ namespace SpiralWar.Rendering
                 HealthBarWidth, HealthBarHeight, percent, HealthTicks, color, ctx.GlowScale);
 
             ctx.UseHud();
-            string value = $"{player.CurrentHealth} / {player.MaxHealth}";
+            string value = player.CurrentHealth + " / " + player.MaxHealth;
             ctx.Batch.DrawString(ctx.GameFont, value,
                 new Vector2(barPos.X + HealthBarWidth + 12f, barPos.Y - 2f),
                 color * 0.9f, 0f, Vector2.Zero, 0.72f, SpriteEffects.None, 0f);
         }
 
-        /// <summary>Active weapon boosts, stacked under the hull bar with their own timers.</summary>
-        public void DrawBoosts(DrawContext ctx, Player player)
+        /// <summary>
+        /// Active weapon supplies and diamond stacks, stacked down the left edge under the hull
+        /// bar. Supplies come first because they change what the gun DOES; diamonds change how
+        /// hard it hits, which matters less in the half second before a ring reaches you.
+        /// </summary>
+        public void DrawLoadout(DrawContext ctx, Player player)
         {
-            float y = Margin + ctx.GameFont.LineSpacing * 0.72f + HealthBarHeight + 14f;
+            PlayerLoadout loadout = player.Loadout;
+            float y = Margin + ctx.GameFont.LineSpacing * 0.72f + HealthBarHeight + 16f;
 
-            if (player.IsTripleActive)
+            for (int i = 0; i < TimedSupplies.Length; i++)
             {
-                DrawBoostRow(ctx, y, "T  TRIPLE FIRE",
-                    player.TripleTimeLeft / GameConstants.TripleFireDuration,
-                    player.TripleTimeLeft,
-                    SupplyTypeInfo.ColorOf(SupplyType.TripleFire));
-                y += 30f;
+                SupplyType type = TimedSupplies[i];
+                if (!loadout.IsActive(type)) continue;
+
+                DrawSupplyRow(ctx, y, type, loadout);
+                y += RowHeight;
             }
 
-            if (player.IsDiffusedActive)
+            if (loadout.ActiveDiamondCount == 0) return;
+
+            y += 6f;
+
+            for (int i = 0; i < DiamondTypeInfo.Count; i++)
             {
-                DrawBoostRow(ctx, y, "D  DIFFUSED FIRE",
-                    player.DiffusedTimeLeft / GameConstants.DiffusedFireDuration,
-                    player.DiffusedTimeLeft,
-                    SupplyTypeInfo.ColorOf(SupplyType.DiffusedFire));
+                var type = (DiamondType)i;
+                int level = loadout.DiamondLevel(type);
+                if (level <= 0) continue;
+
+                DrawDiamondRow(ctx, y, type, level, loadout);
+                y += RowHeight;
             }
         }
 
-        private void DrawBoostRow(DrawContext ctx, float y, string label,
-                                  float percent, float secondsLeft, Color color)
+        private void DrawSupplyRow(DrawContext ctx, float y, SupplyType type, PlayerLoadout loadout)
         {
+            Color color = SupplyTypeInfo.ColorOf(type);
+            string label = SupplyTypeInfo.GlyphOf(type) + "  " + SupplyTypeInfo.NameOf(type);
+
             ctx.UseHud();
             ctx.Batch.DrawString(ctx.GameFont, label, new Vector2(Margin, y),
                 color, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
 
-            ctx.Batch.DrawString(ctx.GameFont, secondsLeft.ToString("F1") + "s",
-                new Vector2(Margin + 150f, y),
+            ctx.Batch.DrawString(ctx.GameFont, loadout.TimeLeft(type).ToString("F1") + "s",
+                new Vector2(Margin + 168f, y),
                 color * 0.75f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
 
             ctx.UseHudGlow();
             NeonRenderer.DrawTimerBar(ctx.Batch, ctx.Pixel,
                 new Vector2(Margin, y + ctx.GameFont.LineSpacing * 0.7f + 2f),
-                196f, 3f, percent, color);
+                206f, 3f, loadout.Fraction(type), color);
+        }
+
+        private void DrawDiamondRow(DrawContext ctx, float y, DiamondType type, int level,
+                                    PlayerLoadout loadout)
+        {
+            Color color = DiamondTypeInfo.ColorOf(type);
+
+            // Three pips: a stack level is a quantity, and a row of lit pips is read faster
+            // than a digit at the edge of vision.
+            ctx.UseHudGlow();
+            for (int pip = 0; pip < GameConstants.DiamondMaxLevel; pip++)
+            {
+                var center = new Vector2(Margin + 6f + pip * 13f, y + 7f);
+                NeonRenderer.DrawDiamondPip(ctx.Batch, ctx.Pixel, center, 4.5f,
+                    color, pip < level);
+            }
+
+            ctx.UseHud();
+            ctx.Batch.DrawString(ctx.GameFont, DiamondTypeInfo.NameOf(type),
+                new Vector2(Margin + 50f, y),
+                color, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+
+            ctx.Batch.DrawString(ctx.GameFont, loadout.DiamondTimeLeft(type).ToString("F1") + "s",
+                new Vector2(Margin + 168f, y),
+                color * 0.75f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+
+            ctx.UseHudGlow();
+            NeonRenderer.DrawTimerBar(ctx.Batch, ctx.Pixel,
+                new Vector2(Margin, y + ctx.GameFont.LineSpacing * 0.7f + 2f),
+                206f, 3f, loadout.DiamondFraction(type), color);
         }
 
         // ── Level status ───────────────────────────────────────────────────
@@ -113,24 +166,30 @@ namespace SpiralWar.Rendering
         {
             SpriteFont font = ctx.GameFont;
 
-            // Level and sector, top right.
+            // Level, sector and form, top right.
             ctx.UseHud();
-            string levelText = $"LEVEL {level.Index} / {GameConstants.MaxLevel}";
+            string levelText = "LEVEL " + level.Index + " / " + GameConstants.MaxLevel;
             Vector2 levelSize = font.MeasureString(levelText) * 0.85f;
             var levelPos = new Vector2(ctx.Width - Margin - levelSize.X, Margin);
 
             ctx.Batch.DrawString(font, levelText, levelPos, level.ThemeColor,
                 0f, Vector2.Zero, 0.85f, SpriteEffects.None, 0f);
 
-            string sector = level.IsBoss ? "* " + level.Title : level.Title;
+            string sector = level.IsBoss ? "** " + level.Title : level.Title;
             Vector2 sectorSize = font.MeasureString(sector) * 0.7f;
             ctx.Batch.DrawString(font, sector,
                 new Vector2(ctx.Width - Margin - sectorSize.X, Margin + levelSize.Y + 2f),
                 level.IsBoss ? new Color(255, 90, 90) : LabelColor,
                 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
 
+            string form = "FORM " + (int)level.Form + "  " + level.FormInfo.Name;
+            Vector2 formSize = font.MeasureString(form) * 0.66f;
+            ctx.Batch.DrawString(font, form,
+                new Vector2(ctx.Width - Margin - formSize.X, Margin + levelSize.Y + sectorSize.Y + 4f),
+                FaintColor, 0f, Vector2.Zero, 0.66f, SpriteEffects.None, 0f);
+
             // Remaining rings, bottom centre.
-            string remaining = $"RINGS  {aliveSegments} / {level.SegmentCount}";
+            string remaining = "RINGS  " + aliveSegments + " / " + level.SegmentCount;
             ctx.DrawTextCentered(font, remaining,
                 new Vector2(ctx.Width * 0.5f, ctx.Height - 30f),
                 Color.Lerp(LabelColor, level.ThemeColor, 0.35f), 0.82f);
@@ -147,7 +206,12 @@ namespace SpiralWar.Rendering
             Color color = Color.Lerp(FaintColor, new Color(255, 60, 60), danger);
             float scale = 0.7f + danger * 0.25f;
 
-            string text = $"CORE BREACH IN {MathF.Max(0f, secondsRemaining):F0}s";
+            // Three minute levels need minutes and seconds; a bare "137s" is not a time.
+            float clamped = MathF.Max(0f, secondsRemaining);
+            int minutes = (int)(clamped / 60f);
+            int seconds = (int)(clamped % 60f);
+            string text = "CORE BREACH IN " + minutes + ":" + seconds.ToString("00");
+
             var position = new Vector2(ctx.Width * 0.5f, ctx.Height - 56f);
 
             if (danger > 0.7f)
@@ -168,34 +232,40 @@ namespace SpiralWar.Rendering
         {
             if (alpha <= 0.01f) return;
 
-            var center = new Vector2(ctx.Width * 0.5f, ctx.Height * 0.34f);
+            var center = new Vector2(ctx.Width * 0.5f, ctx.Height * 0.32f);
 
             ctx.UseHudGlow();
-            ctx.DrawGlowTextCentered(ctx.TitleFont, $"LEVEL {level.Index}",
+            ctx.DrawGlowTextCentered(ctx.TitleFont, "LEVEL " + level.Index,
                 center, level.ThemeColor * alpha, 0.9f, 1.4f);
 
             ctx.UseHud();
             ctx.DrawTextCentered(ctx.GameFont, level.Title,
                 center + new Vector2(0f, 46f), Color.White * (alpha * 0.85f), 0.95f);
 
+            ctx.DrawTextCentered(ctx.GameFont,
+                "FORM " + (int)level.Form + " - " + level.FormInfo.Name,
+                center + new Vector2(0f, 74f),
+                Color.Lerp(LabelColor, level.ThemeColor, 0.5f) * alpha, 0.78f);
+
             if (!string.IsNullOrEmpty(banner))
             {
                 ctx.DrawTextCentered(ctx.GameFont, banner,
-                    center + new Vector2(0f, 76f),
+                    center + new Vector2(0f, 104f),
                     new Color(255, 200, 60) * alpha, 0.78f);
             }
 
-            string brief = $"{level.SegmentCount} RINGS   -   " +
-                           $"{level.MinSegmentHealth}-{level.MaxSegmentHealth} HP   -   " +
-                           $"{level.SpiralDuration:F0}s TO THE CORE";
+            string brief = level.SegmentCount + " RINGS   -   " +
+                           level.MinSegmentHealth + "-" + level.MaxSegmentHealth + " HP   -   " +
+                           (level.SpiralDuration / 60f).ToString("0.0") + " MIN TO THE CORE";
 
             ctx.DrawTextCentered(ctx.GameFont, brief,
-                center + new Vector2(0f, 106f), LabelColor * alpha, 0.72f);
+                center + new Vector2(0f, 134f), LabelColor * alpha, 0.72f);
         }
 
         /// <summary>Win/lose card shown while the screen waits to advance.</summary>
         public void DrawOutcome(DrawContext ctx, bool won, LevelDefinition level, float alpha,
-                                int ringsDestroyed, int suppliesCollected)
+                                int ringsDestroyed, int suppliesCollected, int diamondsCollected,
+                                int chainKills)
         {
             if (alpha <= 0.01f) return;
 
@@ -205,26 +275,31 @@ namespace SpiralWar.Rendering
                 new Color(2, 4, 12) * (alpha * 0.78f));
 
             string headline = won
-                ? (level.Index >= GameConstants.MaxLevel ? "CORE SECURED" : $"LEVEL {level.Index} CLEARED")
+                ? (level.Index >= GameConstants.MaxLevel ? "CORE SECURED" : "LEVEL " + level.Index + " CLEARED")
                 : "CORE BREACHED";
 
             Color color = won ? new Color(0, 255, 170) : new Color(255, 60, 60);
-            var center = new Vector2(ctx.Width * 0.5f, ctx.Height * 0.42f);
+            var center = new Vector2(ctx.Width * 0.5f, ctx.Height * 0.40f);
 
             ctx.UseHudGlow();
             ctx.DrawGlowTextCentered(ctx.TitleFont, headline, center, color * alpha, 0.85f, 1.5f);
 
             ctx.UseHud();
-            string summary = $"RINGS DESTROYED {ringsDestroyed}   -   SUPPLIES {suppliesCollected}";
-            ctx.DrawTextCentered(ctx.GameFont, summary,
+
+            string line1 = "RINGS " + ringsDestroyed + "   -   CHAIN KILLS " + chainKills;
+            ctx.DrawTextCentered(ctx.GameFont, line1,
                 center + new Vector2(0f, 52f), LabelColor * alpha, 0.8f);
+
+            string line2 = "SUPPLIES " + suppliesCollected + "   -   DIAMONDS " + diamondsCollected;
+            ctx.DrawTextCentered(ctx.GameFont, line2,
+                center + new Vector2(0f, 78f), LabelColor * alpha, 0.8f);
 
             string next = won
                 ? (level.Index >= GameConstants.MaxLevel ? "RETURNING TO MENU" : "NEXT LEVEL STARTING")
                 : "RETURNING TO MENU";
 
             ctx.DrawTextCentered(ctx.GameFont, next,
-                center + new Vector2(0f, 82f), FaintColor * alpha, 0.74f);
+                center + new Vector2(0f, 110f), FaintColor * alpha, 0.74f);
         }
 
         /// <summary>Bottom-left control hint, faded out after the first few seconds of a run.</summary>

@@ -10,10 +10,10 @@ namespace SpiralWar.Entities
     /// <summary>
     /// A pickup released by a destroyed carrier ring.
     ///
-    /// Supplies always drift toward the core, where the ship sits. That is a deliberate
-    /// design choice: the player never has to leave the centre to chase a pickup, so
-    /// collecting one is a reward for killing the right ring rather than a second skill test.
-    /// The player still has to survive long enough for it to arrive.
+    /// Supplies always drift toward the core, where the ship sits. That is a deliberate design
+    /// choice: the player never has to leave the centre to chase a pickup, so collecting one is
+    /// a reward for killing the right ring rather than a second skill test. The player still has
+    /// to survive long enough for it to arrive.
     /// </summary>
     public sealed class Supply : GameObject, IPoolable
     {
@@ -58,9 +58,7 @@ namespace SpiralWar.Entities
             Activate();
         }
 
-        /// <summary>
-        /// Moves the supply toward <paramref name="corePosition"/> and ages it out.
-        /// </summary>
+        /// <summary>Moves the supply toward <paramref name="corePosition"/> and ages it out.</summary>
         public void Update(GameTime gameTime, Vector2 corePosition)
         {
             if (!IsActive) return;
@@ -93,13 +91,15 @@ namespace SpiralWar.Entities
                 Vector2 direction = toCore / distance;
 
                 // Accelerate slightly as it closes so the last stretch does not feel sluggish.
-                float speed = GameConstants.SupplyFallSpeed * (1f + (1f - MathF.Min(1f, distance / 500f)) * 0.5f);
+                float speed = GameConstants.SupplyFallSpeed *
+                              (1f + (1f - MathF.Min(1f, distance / 500f)) * 0.5f);
                 SetPosition(Position + (direction * speed + _drift) * dt);
             }
         }
 
         public override void Update(GameTime gameTime)
-            => Update(gameTime, new Vector2(GameConstants.ScreenWidth * 0.5f, GameConstants.ScreenHeight * 0.5f));
+            => Update(gameTime, new Vector2(GameConstants.ScreenWidth * 0.5f,
+                                            GameConstants.ScreenHeight * 0.5f));
 
         public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
         {
@@ -126,31 +126,23 @@ namespace SpiralWar.Entities
             Vector2 size = _font.MeasureString(glyph);
             Vector2 pos = Position - size * 0.5f;
 
-            // Halo then glyph — the letter has to survive being read at speed.
+            // Halo then glyph - the letter has to survive being read at speed.
             sb.DrawString(_font, glyph, pos + new Vector2(-1f, 0f), glyphColor * 0.35f);
             sb.DrawString(_font, glyph, pos + new Vector2(1f, 0f), glyphColor * 0.35f);
             sb.DrawString(_font, glyph, pos, glyphColor);
         }
 
-        /// <summary>Applies the effect to the ship and retires the pickup.</summary>
-        public void Collect(Player player)
+        /// <summary>
+        /// Applies the effect to the ship and retires the pickup.
+        /// Returns the hit points restored, which is zero for everything but a repair pack.
+        /// </summary>
+        public int Collect(Player player)
         {
-            if (!IsActive || player == null) return;
+            if (!IsActive || player == null) return 0;
 
-            switch (Type)
-            {
-                case SupplyType.TripleFire:
-                    player.ApplyTripleFire();
-                    break;
-                case SupplyType.DiffusedFire:
-                    player.ApplyDiffusedFire();
-                    break;
-                default:
-                    player.Heal(GameConstants.HealthPackRestore);
-                    break;
-            }
-
+            int healed = player.ApplySupply(Type);
             Deactivate();
+            return healed;
         }
 
         // ── IPoolable ──────────────────────────────────────────────────────

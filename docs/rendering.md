@@ -88,6 +88,44 @@ The hull bar is **segmented into 10 discrete ticks** rather than being a smooth 
 Discrete ticks can be counted at a glance; a smooth bar has to be estimated. Below 28% it
 switches to red and breathes.
 
+## v1.2 shapes
+
+`NeonRenderer` gained five shapes, each with a silhouette that has to be identifiable before
+the glyph on it can be read:
+
+- **Dynamite ring** - a hot orange double shell, hazard chevrons, and a bright spark orbiting
+  the outside like a lit fuse. Three signals no other ring has, because a charge has to be
+  unmistakable from the corner of the eye.
+- **Neon diamond** - a tall faceted kite that tumbles by squashing its width with a cosine, so
+  it reads as a 3D stone turning rather than a 2D shape spinning. Deliberately nothing like the
+  supply capsule's square: a weapon and a stat should be distinguishable without reading.
+  The black diamond is a DARK stone inside a BRIGHT shell, because a black stone on a black
+  arena is invisible.
+- **Missile** - a small dart with three shrinking exhaust puffs behind it. The plume is what
+  makes it legible as "mine and moving" in a frame already full of enemy neon.
+- **Acid overlay** - short vertical drips hanging off the ring's lower edge in its LOCAL space,
+  so the corrosion rotates with the ring. Each drip bobs on its own phase, which reads as wet
+  rather than striped.
+- **Stasis field** - four faint rings and twelve slowly counter-rotating spokes over the whole
+  arena. Faint on purpose: it must convey the slowdown without making the arena harder to read.
+
+## Updated performance budget
+
+Ring counts now peak at **190** (level 20, SWARM form) rather than ~130. At roughly fifty
+sprite draws per ring that is ~9,500 sprites before particles if every ring were visible.
+
+What carries it, unchanged in priority:
+
+1. **Off-screen culling** (`Snake.IsOnScreen`, margin derived from the level's ring width).
+   Most of a SWARM spiral is off-stage for much of the level.
+2. **`GameSettings.GlowScale`** scales every additive halo.
+3. **Pooling** - bullets (640), missiles (64), supplies (64), diamonds (48), particles (1200),
+   floating text (96) are all pre-allocated.
+
+Note that the forms trade in the right direction for this: the levels with the most rings are
+also the ones with the SMALLEST rings, and the Bulwark levels that draw the most expensive
+rings only have 60-90 of them.
+
 ## Virtual resolution
 
 The game is authored at 1280x720. `ViewportAdapter` computes a uniform scale and a centring

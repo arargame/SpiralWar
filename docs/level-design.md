@@ -6,18 +6,40 @@ by changing a handful of constants instead of editing a hundred rows.
 
 ## The design contract
 
-1. **A bullet always deals 1 damage.** Every hit visibly ticks the number on a ring down by
-   one, so the player can always read exactly how much work is left. Difficulty is expressed
-   as more rings, tougher rings and a faster spiral - never as an invisible multiplier.
-2. **The spiral is the fail timer.** `SpiralDuration` is always at least 45% longer than the
-   time the curve expects a competent player to need. A clean run finishes with slack; a
-   sloppy one gets eaten.
-3. **Steps are smooth, rules are announced.** Sub-linear power curves everywhere, with three
-   hard milestones that introduce a NEW rule rather than a bigger number. Each one is shown on
-   the level intro card.
-4. **Every tenth level is a boss.** ~30% more rings, tougher, faster, more armor - and ~30%
-   more time, because otherwise it stops being a challenge and becomes an impossibility.
-5. **Each tier of ten levels has its own accent colour**, so progress is legible at a glance.
+1. **Every level is three minutes.** The spiral always needs
+   `GameConstants.LevelDurationSeconds` (180s) to reach the core, at every level, boss or not.
+   A fail timer the player can internalise is worth more than one that shifts under them, and
+   it makes the health pool a straightforward consequence:
+   **pool = expected damage output x expected clear time**.
+2. **The health pool is the design variable; the form splits it.** The curve decides how many
+   hit points a level is worth. The level's `SnakeForm` then decides whether that is spent on a
+   swarm of fragile rings or a short column of enormous ones.
+3. **A base bullet still deals 1.** Critical hits, power attacks, acid, missiles and dynamite
+   can all exceed that, but every one of them announces itself on screen in its own colour, so
+   the player can always account for what came off a ring.
+4. **New rules arrive with a banner, never silently.**
+5. **Every tenth level is a boss**: 25% more rings, 8% more health, far more dynamite.
+
+## The five forms
+
+The form is decided by which band of twenty levels you are in, so the snake visibly changes
+character five times across the campaign instead of only getting numerically bigger.
+
+| Form | Levels | Name | Ring count | Ring health | Ring scale | Character |
+|---:|:---|:---|---:|---:|---:|:---|
+| 1 | 1-20 | SWARM | x1.70 | x0.59 | x0.80 | many small fragile rings |
+| 2 | 21-40 | FLIGHT | x1.35 | x0.74 | x0.90 | long and light |
+| 3 | 41-60 | COLUMN | x1.00 | x1.00 | x1.00 | the reference shape |
+| 4 | 61-80 | PHALANX | x0.78 | x1.28 | x1.22 | fewer, larger, tougher |
+| 5 | 81-100 | BULWARK | x0.60 | x1.67 | x1.50 | a short column of huge rings |
+
+The contract that makes this work: **count factor x health factor is approximately 1 for every
+form.** Switching form changes how a level FEELS, not how long it takes.
+
+`RingScale` is not decoration. A ring carrying four times the health has to look like it, and
+scaling the ring also keeps the snake's physical length roughly constant as the count drops -
+a Bulwark spiral of 70 rings at normal size would be a few dots on an empty screen rather than
+a wall.
 
 ## The formulas
 
@@ -25,31 +47,49 @@ With `t = (level - 1) / 99`:
 
 | Parameter | Formula | Range |
 |---|---|---|
-| Rings | `round(22 + 78 * t^0.75)` | 22 -> 100 |
-| Min ring HP | `round(2 + 2t)` | 2 -> 4 |
-| Max ring HP | `round(5 + 5t)` | 5 -> 10 |
-| Target clear time | `18 + 46 * t^0.90` | 18s -> 64s |
-| Core breach timer | `targetClear * 1.45` | 26s -> 93s |
-| Angular speed | `0.45 + 0.55t` rad/s | 0.45 -> 1.00 |
+| Health pool (armor included) | `700 + 4200 * t` | 700 -> 4900 |
+| Reference ring count | `75 + 45 * t^0.70` | 75 -> 120 |
+| Ring count | `reference * form.CountFactor` | 68 -> 190 |
+| Average ring HP | `pool / (count * (1 + armoredChance))` | 5 -> 55 |
+| Ring HP range | `average * 0.60` .. `average * 1.45` | 3 -> 80 |
+| Spiral duration | constant | 180s |
+| Armored chance | 0 below 25, then ramps to 0.22 | 0% -> 22% |
+| Dynamite chance | 0 below 10, then 0.075 * (0.35 + 0.65 * p) | 0% -> 7.5% |
+| Supply carry chance | `0.26 + 0.06 * t` | 26% -> 32% |
+| Diamond carry chance | `0.08 + 0.07 * t` | 8% -> 15% |
 | Inward acceleration | `0.25 + 0.45t` (+0.35 from level 50) | 0.25 -> 1.05 |
-| Armored chance | `0` below 25, then ramps to `0.22` | 0% -> 22% |
-| Regeneration | from level 75 | `1 + (L-75)/12` HP/s after 3.5s untouched |
 
-Boss levels (`level % 10 == 0`) then apply: rings x1.30, max HP x1.35, angular x1.15,
-breach timer x1.30, armored chance +0.10 (capped at 40%).
+Boss levels (`level % 10 == 0`) then apply: rings x1.25, pool x1.08, dynamite +5pp (cap 16%),
+armor +10pp (cap 40%).
 
-### Why the curve exponents are below 1
+### Why the pool curve is linear
 
-`t^0.75` on ring count and `t^0.90` on clear time both mean the campaign gets harder **fast at
-the start and gently at the end**. Level 1 to 10 roughly doubles the ring count; level 90 to
-100 adds a few percent. That is deliberate: early levels are where a player decides whether the
-game is worth learning, so the sense of escalation has to be obvious there. By level 90 the
-player already has full mastery and the interesting pressure comes from the spiral speed and
-the milestone rules, not from the count.
+It tracks the player's damage output, and that output rises roughly linearly with the supply
+and diamond economy a level hands out. A sub-linear curve made levels 6 to 9 - after the pool
+has grown but **before dynamite unlocks at level 10** - the only unwinnable stretch in the
+campaign. Linear removes that notch.
+
+### Why armor is resolved before health
+
+An armored ring carries **double** hit points. Deriving the average ring health without
+accounting for that silently inflates the real pool by up to 40% at the top of the campaign,
+which is the difference between a hard level and an impossible one. `LevelDesigner` therefore
+computes `armoredChance` first and divides by `(1 + armoredChance)`.
+
+### Why the angular speed is derived, not authored
+
+The radial gap between two turns of the spiral has to stay a few ring-heights wide or the turns
+overlap and the arena becomes unreadable. Bigger rings need a wider corridor, so:
+
+```
+revolutions  = spawnRadius / (ringHeight * form.TurnGapInRingHeights)
+angularSpeed = revolutions * 2*pi / 180s  * (1 + 0.25t)
+```
+
+A Swarm level winds 12.6 turns; a Bulwark level only 7.0. Both leave the same amount of room
+to fly through.
 
 ### Inward acceleration
-
-The head's progress along the radius is eased:
 
 ```
 u        = elapsed / spiralDuration
@@ -59,156 +99,142 @@ radius   = startRadius * (1 - progress)
 
 At `u = 1` this is exactly 1 regardless of `accel`, so the fail timer is honest whatever the
 acceleration is. What changes is the shape: the head starts at the authored pace and tightens
-as it closes. From level 50 the surge bonus roughly doubles that tightening, which is what
-makes the last third of a high level feel like it is closing in on you.
+as it closes. From level 50 the surge bonus roughly doubles that tightening.
 
 ## Milestones
 
 | Level | Rule | Banner |
 |---|---|---|
-| 25 | **Armored rings.** Silver-white, double hit points, an X brace and their own clank on impact. | `NEW: ARMORED RINGS CARRY DOUBLE PLATING` |
-| 50 | **The surge.** Inward acceleration jumps by 0.35, so the spiral visibly speeds up as it closes. | `NEW: THE SPIRAL SURGES AS IT CLOSES` |
-| 75 | **Regeneration.** A ring left alone for 3.5s heals. Spreading fire thinly across the snake stops working. | `NEW: RINGS REGENERATE IF YOU LET THEM BREATHE` |
-| every 10th | Boss spiral. | `BOSS SPIRAL` |
+| 10 | **Neon dynamite.** Rings that detonate, damaging and chaining into their neighbours. | `NEW: NEON DYNAMITE - SHOOT IT, CLEAR THE CLUSTER` |
+| 21 / 41 / 61 / 81 | **A new form.** The snake's whole shape changes. | `NEW FORM: <name> - <tagline>` |
+| 25 | **Armored rings.** Silver-white, double hit points, an X brace and their own clank. | `NEW: ARMORED RINGS CARRY DOUBLE PLATING` |
+| 50 | **The surge.** The spiral visibly speeds up as it closes. | `NEW: THE SPIRAL SURGES AS IT CLOSES` |
+| 75 | **Regeneration.** A ring left alone for 3.5s heals - and acid stops it. | `NEW: RINGS REGENERATE IF YOU LET THEM BREATHE` |
+| every 10 | Boss spiral. | `BOSS SPIRAL` |
 | 100 | The finale. | `THE FINAL CORE` |
-
-> Note: armor is **double hit points**, not damage reduction, and the banner says so. A damage
-> reduction would round to nothing against 1-damage bullets and the rule would silently do
-> nothing - and the player would have no way to see that it was broken. See
-> `SnakeSegment.ArmorHealthMultiplier`.
 
 ## Tiers
 
-| Tier | Levels | Name | Accent |
-|---|---|---|---|
-| 1 | 1-10 | OUTER RIM | ice cyan |
-| 2 | 11-20 | DRIFT | mint |
-| 3 | 21-30 | THE COIL | acid lime |
-| 4 | 31-40 | ASHFALL | amber |
-| 5 | 41-50 | EMBER GATE | ember |
-| 6 | 51-60 | REDSHIFT | coral |
-| 7 | 61-70 | SINGULARITY | hot magenta |
-| 8 | 71-80 | VIOLET DEEP | violet |
-| 9 | 81-90 | EVENT HORIZON | indigo |
-| 10 | 91-100 | WHITE CORE | white hot |
-
-The tier accent drives the grid, the starfield tint, the core ring and the HUD level readout,
-so a screenshot alone tells you roughly how far in the player is.
+Ten accent colours, one per ten levels, driving the grid, the starfield tint, the core ring and
+the HUD: OUTER RIM, DRIFT, THE COIL, ASHFALL, EMBER GATE, REDSHIFT, SINGULARITY, VIOLET DEEP,
+EVENT HORIZON, WHITE CORE.
 
 ## Balance check
 
-The "health pool" column below is `rings x average HP x (1 + armoredChance)`, i.e. the total
-number of bullets that must connect to clear the level.
+The model behind the curve assumes effective damage output of
+`4.7 + 19 * t^0.9` points per second - 4.7/s at level 1 from the bare gun at 80% accuracy,
+rising to ~24/s once the supply and diamond economy is running - plus dynamite relief of about
+four rings per charge.
 
-Against it, the design assumes an effective damage output rising from ~4.7/s at level 1
-(5.9 shots/s at 80% accuracy, no boosts yet) to ~13.7/s once supply uptime is high. Under that
-model **every level in the campaign clears inside its breach timer**, with the two tightest
-being level 10 (the first boss, ~5s of slack) and level 100 (~8s). Those two are supposed to be
-walls.
+Under that model **every level in the campaign clears between 131 and 163 seconds**, against a
+180 second fail timer. Average 155s. The tightest levels still leave 17 seconds of slack.
 
-If you retune anything in `LevelDesigner`, re-check that margin before committing.
+That is the intended shape: a three minute level that a competent player finishes with time to
+spare, and a sloppy one does not finish at all.
+
+**If you retune anything in `LevelDesigner`, re-run that check before committing.**
 
 ## Generated table
 
-| Level | Tier | Rings | Ring HP | Health pool | Target clear | Core breach | Angular (rad/s) | Inward accel | Armored | Regen |
-|------:|:----:|------:|:-------:|------------:|-------------:|------------:|----------------:|-------------:|--------:|:-----:|
-| 1 | OUTER RIM | 22 | 2-5 | 77 | 18s | 26s | 0.45 | 0.25 | 0% | - |
-| 2 | OUTER RIM | 24 | 2-5 | 84 | 19s | 27s | 0.46 | 0.25 | 0% | - |
-| 3 | OUTER RIM | 26 | 2-5 | 91 | 19s | 28s | 0.46 | 0.26 | 0% | - |
-| 4 | OUTER RIM | 28 | 2-5 | 98 | 20s | 29s | 0.47 | 0.26 | 0% | - |
-| 5 | OUTER RIM | 29 | 2-5 | 102 | 21s | 30s | 0.47 | 0.27 | 0% | - |
-| 6 | OUTER RIM | 30 | 2-5 | 105 | 21s | 31s | 0.48 | 0.27 | 0% | - |
-| 7 | OUTER RIM | 32 | 2-5 | 112 | 22s | 31s | 0.48 | 0.28 | 0% | - |
-| 8 | OUTER RIM | 33 | 2-5 | 116 | 22s | 32s | 0.49 | 0.28 | 0% | - |
-| 9 | OUTER RIM | 34 | 2-5 | 119 | 23s | 33s | 0.49 | 0.29 | 0% | - |
-| 10 | **BOSS** | 46 | 2-7 | 228 | 23s | 44s | 0.57 | 0.29 | 10% | - |
-| 11 | DRIFT | 36 | 2-6 | 144 | 24s | 35s | 0.51 | 0.30 | 0% | - |
-| 12 | DRIFT | 37 | 2-6 | 148 | 24s | 35s | 0.51 | 0.30 | 0% | - |
-| 13 | DRIFT | 38 | 2-6 | 152 | 25s | 36s | 0.52 | 0.30 | 0% | - |
-| 14 | DRIFT | 39 | 2-6 | 156 | 25s | 37s | 0.52 | 0.31 | 0% | - |
-| 15 | DRIFT | 40 | 2-6 | 160 | 26s | 38s | 0.53 | 0.31 | 0% | - |
-| 16 | DRIFT | 41 | 2-6 | 164 | 26s | 38s | 0.53 | 0.32 | 0% | - |
-| 17 | DRIFT | 42 | 2-6 | 168 | 27s | 39s | 0.54 | 0.32 | 0% | - |
-| 18 | DRIFT | 43 | 2-6 | 172 | 27s | 40s | 0.54 | 0.33 | 0% | - |
-| 19 | DRIFT | 44 | 2-6 | 176 | 28s | 40s | 0.55 | 0.33 | 0% | - |
-| 20 | **BOSS** | 58 | 2-8 | 319 | 28s | 54s | 0.64 | 0.34 | 10% | - |
-| 21 | THE COIL | 46 | 2-6 | 184 | 29s | 42s | 0.56 | 0.34 | 0% | - |
-| 22 | THE COIL | 46 | 2-6 | 184 | 29s | 43s | 0.57 | 0.35 | 0% | - |
-| 23 | THE COIL | 47 | 2-6 | 188 | 30s | 43s | 0.57 | 0.35 | 0% | - |
-| 24 | THE COIL | 48 | 2-6 | 192 | 30s | 44s | 0.58 | 0.35 | 0% | - |
-| 25 | THE COIL | 49 | 2-6 | 196 | 31s | 45s | 0.58 | 0.36 | 0% | - |
-| 26 | THE COIL | 50 | 3-6 | 226 | 31s | 45s | 0.59 | 0.36 | 0% | - |
-| 27 | THE COIL | 51 | 3-6 | 231 | 32s | 46s | 0.59 | 0.37 | 1% | - |
-| 28 | THE COIL | 51 | 3-6 | 232 | 32s | 47s | 0.60 | 0.37 | 1% | - |
-| 29 | THE COIL | 52 | 3-6 | 237 | 33s | 48s | 0.61 | 0.38 | 1% | - |
-| 30 | **BOSS** | 69 | 3-8 | 423 | 33s | 63s | 0.70 | 0.38 | 11% | - |
-| 31 | ASHFALL | 54 | 3-7 | 275 | 34s | 49s | 0.62 | 0.39 | 2% | - |
-| 32 | ASHFALL | 55 | 3-7 | 281 | 34s | 50s | 0.62 | 0.39 | 2% | - |
-| 33 | ASHFALL | 55 | 3-7 | 281 | 35s | 50s | 0.63 | 0.40 | 2% | - |
-| 34 | ASHFALL | 56 | 3-7 | 287 | 35s | 51s | 0.63 | 0.40 | 3% | - |
-| 35 | ASHFALL | 57 | 3-7 | 293 | 36s | 52s | 0.64 | 0.40 | 3% | - |
-| 36 | ASHFALL | 58 | 3-7 | 299 | 36s | 52s | 0.64 | 0.41 | 3% | - |
-| 37 | ASHFALL | 59 | 3-7 | 305 | 37s | 53s | 0.65 | 0.41 | 4% | - |
-| 38 | ASHFALL | 59 | 3-7 | 306 | 37s | 54s | 0.66 | 0.42 | 4% | - |
-| 39 | ASHFALL | 60 | 3-7 | 312 | 37s | 54s | 0.66 | 0.42 | 4% | - |
-| 40 | **BOSS** | 79 | 3-9 | 542 | 38s | 71s | 0.77 | 0.43 | 14% | - |
-| 41 | EMBER GATE | 62 | 3-7 | 325 | 38s | 56s | 0.67 | 0.43 | 5% | - |
-| 42 | EMBER GATE | 62 | 3-7 | 325 | 39s | 56s | 0.68 | 0.44 | 5% | - |
-| 43 | EMBER GATE | 63 | 3-7 | 332 | 39s | 57s | 0.68 | 0.44 | 5% | - |
-| 44 | EMBER GATE | 64 | 3-7 | 338 | 40s | 58s | 0.69 | 0.45 | 6% | - |
-| 45 | EMBER GATE | 64 | 3-7 | 339 | 40s | 58s | 0.69 | 0.45 | 6% | - |
-| 46 | EMBER GATE | 65 | 3-7 | 345 | 41s | 59s | 0.70 | 0.45 | 6% | - |
-| 47 | EMBER GATE | 66 | 3-7 | 351 | 41s | 60s | 0.71 | 0.46 | 6% | - |
-| 48 | EMBER GATE | 67 | 3-7 | 358 | 42s | 60s | 0.71 | 0.46 | 7% | - |
-| 49 | EMBER GATE | 67 | 3-7 | 359 | 42s | 61s | 0.72 | 0.47 | 7% | - |
-| 50 | **BOSS** | 88 | 3-9 | 620 | 42s | 80s | 0.83 | 0.82 | 17% | - |
-| 51 | REDSHIFT | 69 | 3-8 | 408 | 43s | 62s | 0.73 | 0.83 | 8% | - |
-| 52 | REDSHIFT | 69 | 3-8 | 410 | 43s | 63s | 0.73 | 0.83 | 8% | - |
-| 53 | REDSHIFT | 70 | 3-8 | 417 | 44s | 63s | 0.74 | 0.84 | 8% | - |
-| 54 | REDSHIFT | 71 | 3-8 | 424 | 44s | 64s | 0.74 | 0.84 | 9% | - |
-| 55 | REDSHIFT | 72 | 3-8 | 431 | 45s | 65s | 0.75 | 0.85 | 9% | - |
-| 56 | REDSHIFT | 72 | 3-8 | 432 | 45s | 65s | 0.76 | 0.85 | 9% | - |
-| 57 | REDSHIFT | 73 | 3-8 | 439 | 46s | 66s | 0.76 | 0.85 | 9% | - |
-| 58 | REDSHIFT | 74 | 3-8 | 446 | 46s | 67s | 0.77 | 0.86 | 10% | - |
-| 59 | REDSHIFT | 74 | 3-8 | 448 | 46s | 67s | 0.77 | 0.86 | 10% | - |
-| 60 | **BOSS** | 98 | 3-11 | 825 | 47s | 88s | 0.89 | 0.87 | 20% | - |
-| 61 | SINGULARITY | 76 | 3-8 | 462 | 47s | 69s | 0.78 | 0.87 | 11% | - |
-| 62 | SINGULARITY | 76 | 3-8 | 463 | 48s | 69s | 0.79 | 0.88 | 11% | - |
-| 63 | SINGULARITY | 77 | 3-8 | 471 | 48s | 70s | 0.79 | 0.88 | 11% | - |
-| 64 | SINGULARITY | 78 | 3-8 | 478 | 49s | 71s | 0.80 | 0.89 | 11% | - |
-| 65 | SINGULARITY | 78 | 3-8 | 479 | 49s | 71s | 0.81 | 0.89 | 12% | - |
-| 66 | SINGULARITY | 79 | 3-8 | 487 | 49s | 72s | 0.81 | 0.90 | 12% | - |
-| 67 | SINGULARITY | 80 | 3-8 | 494 | 50s | 72s | 0.82 | 0.90 | 12% | - |
-| 68 | SINGULARITY | 80 | 3-8 | 495 | 50s | 73s | 0.82 | 0.90 | 13% | - |
-| 69 | SINGULARITY | 81 | 3-8 | 503 | 51s | 74s | 0.83 | 0.91 | 13% | - |
-| 70 | **BOSS** | 105 | 3-11 | 906 | 51s | 97s | 0.96 | 0.91 | 23% | - |
-| 71 | VIOLET DEEP | 82 | 3-9 | 558 | 52s | 75s | 0.84 | 0.92 | 13% | - |
-| 72 | VIOLET DEEP | 83 | 3-9 | 567 | 52s | 76s | 0.84 | 0.92 | 14% | - |
-| 73 | VIOLET DEEP | 83 | 3-9 | 568 | 53s | 76s | 0.85 | 0.93 | 14% | - |
-| 74 | VIOLET DEEP | 84 | 3-9 | 576 | 53s | 77s | 0.86 | 0.93 | 14% | - |
-| 75 | VIOLET DEEP | 85 | 3-9 | 585 | 53s | 77s | 0.86 | 0.94 | 15% | yes |
-| 76 | VIOLET DEEP | 85 | 4-9 | 635 | 54s | 78s | 0.87 | 0.94 | 15% | yes |
-| 77 | VIOLET DEEP | 86 | 4-9 | 644 | 54s | 79s | 0.87 | 0.95 | 15% | yes |
-| 78 | VIOLET DEEP | 87 | 4-9 | 653 | 55s | 79s | 0.88 | 0.95 | 16% | yes |
-| 79 | VIOLET DEEP | 87 | 4-9 | 655 | 55s | 80s | 0.88 | 0.95 | 16% | yes |
-| 80 | **BOSS** | 114 | 4-12 | 1150 | 56s | 105s | 1.02 | 0.96 | 26% | yes |
-| 81 | EVENT HORIZON | 88 | 4-9 | 666 | 56s | 81s | 0.89 | 0.96 | 16% | yes |
-| 82 | EVENT HORIZON | 89 | 4-9 | 675 | 56s | 82s | 0.90 | 0.97 | 17% | yes |
-| 83 | EVENT HORIZON | 90 | 4-9 | 685 | 57s | 82s | 0.91 | 0.97 | 17% | yes |
-| 84 | EVENT HORIZON | 90 | 4-9 | 686 | 57s | 83s | 0.91 | 0.98 | 17% | yes |
-| 85 | EVENT HORIZON | 91 | 4-9 | 696 | 58s | 84s | 0.92 | 0.98 | 18% | yes |
-| 86 | EVENT HORIZON | 92 | 4-9 | 705 | 58s | 84s | 0.92 | 0.99 | 18% | yes |
-| 87 | EVENT HORIZON | 92 | 4-9 | 707 | 59s | 85s | 0.93 | 0.99 | 18% | yes |
-| 88 | EVENT HORIZON | 93 | 4-9 | 716 | 59s | 85s | 0.93 | 1.00 | 18% | yes |
-| 89 | EVENT HORIZON | 93 | 4-9 | 718 | 59s | 86s | 0.94 | 1.00 | 19% | yes |
-| 90 | **BOSS** | 122 | 4-12 | 1260 | 60s | 113s | 1.09 | 1.00 | 29% | yes |
-| 91 | WHITE CORE | 95 | 4-10 | 794 | 60s | 87s | 0.95 | 1.01 | 19% | yes |
-| 92 | WHITE CORE | 95 | 4-10 | 796 | 61s | 88s | 0.96 | 1.01 | 20% | yes |
-| 93 | WHITE CORE | 96 | 4-10 | 806 | 61s | 89s | 0.96 | 1.02 | 20% | yes |
-| 94 | WHITE CORE | 96 | 4-10 | 808 | 61s | 89s | 0.97 | 1.02 | 20% | yes |
-| 95 | WHITE CORE | 97 | 4-10 | 818 | 62s | 90s | 0.97 | 1.03 | 21% | yes |
-| 96 | WHITE CORE | 98 | 4-10 | 829 | 62s | 90s | 0.98 | 1.03 | 21% | yes |
-| 97 | WHITE CORE | 98 | 4-10 | 831 | 63s | 91s | 0.98 | 1.04 | 21% | yes |
-| 98 | WHITE CORE | 99 | 4-10 | 841 | 63s | 92s | 0.99 | 1.04 | 21% | yes |
-| 99 | WHITE CORE | 99 | 4-10 | 843 | 64s | 92s | 0.99 | 1.05 | 22% | yes |
-| 100 | **BOSS** | 130 | 4-14 | 1544 | 64s | 121s | 1.15 | 1.05 | 32% | yes |
+| Level | Form | Rings | Ring HP | Health pool | Ring size | Turns | Angular | Dynamite | Armored | Supply | Diamond | Blast |
+|------:|:-----|------:|:-------:|------------:|:---------:|------:|--------:|---------:|--------:|-------:|--------:|------:|
+| 1 | SWARM | 128 | 3-8 | 704 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 6 |
+| 2 | SWARM | 131 | 3-8 | 720 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 6 |
+| 3 | SWARM | 132 | 4-9 | 858 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 7 |
+| 4 | SWARM | 134 | 4-9 | 871 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 7 |
+| 5 | SWARM | 136 | 4-9 | 884 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 7 |
+| 6 | SWARM | 137 | 4-10 | 959 | 38x22 | 12.6 | 0.44 | 0.0% | 0% | 26% | 8% | 8 |
+| 7 | SWARM | 138 | 4-10 | 966 | 38x22 | 12.6 | 0.45 | 0.0% | 0% | 26% | 8% | 8 |
+| 8 | SWARM | 139 | 4-10 | 973 | 38x22 | 12.6 | 0.45 | 0.0% | 0% | 26% | 8% | 8 |
+| 9 | SWARM | 141 | 4-11 | 1058 | 38x22 | 12.6 | 0.45 | 0.0% | 0% | 26% | 9% | 9 |
+| 10 | **SWARM BOSS** | 178 | 4-9 | 1273 | 38x22 | 12.6 | 0.45 | 7.6% | 10% | 27% | 9% | 7 |
+| 11 | SWARM | 143 | 5-11 | 1144 | 38x22 | 12.6 | 0.45 | 2.7% | 0% | 27% | 9% | 9 |
+| 12 | SWARM | 144 | 5-12 | 1224 | 38x22 | 12.6 | 0.45 | 2.7% | 0% | 27% | 9% | 10 |
+| 13 | SWARM | 145 | 5-12 | 1232 | 38x22 | 12.6 | 0.45 | 2.8% | 0% | 27% | 9% | 10 |
+| 14 | SWARM | 146 | 5-12 | 1241 | 38x22 | 12.6 | 0.45 | 2.8% | 0% | 27% | 9% | 10 |
+| 15 | SWARM | 147 | 5-13 | 1323 | 38x22 | 12.6 | 0.45 | 2.9% | 0% | 27% | 9% | 10 |
+| 16 | SWARM | 148 | 5-13 | 1332 | 38x22 | 12.6 | 0.46 | 2.9% | 0% | 27% | 9% | 10 |
+| 17 | SWARM | 149 | 6-13 | 1416 | 38x22 | 12.6 | 0.46 | 3.0% | 0% | 27% | 9% | 10 |
+| 18 | SWARM | 150 | 6-14 | 1500 | 38x22 | 12.6 | 0.46 | 3.1% | 0% | 27% | 9% | 11 |
+| 19 | SWARM | 151 | 6-14 | 1510 | 38x22 | 12.6 | 0.46 | 3.1% | 0% | 27% | 9% | 11 |
+| 20 | **SWARM BOSS** | 190 | 5-11 | 1672 | 38x22 | 12.6 | 0.46 | 8.2% | 10% | 27% | 9% | 9 |
+| 21 | FLIGHT | 121 | 8-19 | 1634 | 43x25 | 11.1 | 0.41 | 3.2% | 0% | 27% | 9% | 15 |
+| 22 | FLIGHT | 122 | 8-19 | 1647 | 43x25 | 11.1 | 0.41 | 3.3% | 0% | 27% | 9% | 15 |
+| 23 | FLIGHT | 122 | 8-19 | 1647 | 43x25 | 11.1 | 0.41 | 3.3% | 0% | 27% | 10% | 15 |
+| 24 | FLIGHT | 123 | 8-20 | 1722 | 43x25 | 11.1 | 0.41 | 3.4% | 0% | 27% | 10% | 16 |
+| 25 | FLIGHT | 124 | 8-20 | 1736 | 43x25 | 11.1 | 0.41 | 3.4% | 0% | 27% | 10% | 16 |
+| 26 | FLIGHT | 124 | 8-21 | 1803 | 43x25 | 11.1 | 0.41 | 3.5% | 0% | 28% | 10% | 17 |
+| 27 | FLIGHT | 125 | 9-21 | 1886 | 43x25 | 11.1 | 0.41 | 3.5% | 1% | 28% | 10% | 17 |
+| 28 | FLIGHT | 126 | 9-21 | 1907 | 43x25 | 11.1 | 0.41 | 3.6% | 1% | 28% | 10% | 17 |
+| 29 | FLIGHT | 126 | 9-21 | 1912 | 43x25 | 11.1 | 0.41 | 3.7% | 1% | 28% | 10% | 17 |
+| 30 | **FLIGHT BOSS** | 159 | 7-17 | 2127 | 43x25 | 11.1 | 0.41 | 8.7% | 11% | 28% | 10% | 14 |
+| 31 | FLIGHT | 128 | 9-22 | 2019 | 43x25 | 11.1 | 0.42 | 3.8% | 2% | 28% | 10% | 18 |
+| 32 | FLIGHT | 128 | 9-22 | 2025 | 43x25 | 11.1 | 0.42 | 3.8% | 2% | 28% | 10% | 18 |
+| 33 | FLIGHT | 129 | 9-23 | 2112 | 43x25 | 11.1 | 0.42 | 3.9% | 2% | 28% | 10% | 18 |
+| 34 | FLIGHT | 129 | 10-23 | 2185 | 43x25 | 11.1 | 0.42 | 3.9% | 3% | 28% | 10% | 18 |
+| 35 | FLIGHT | 130 | 10-23 | 2208 | 43x25 | 11.1 | 0.42 | 4.0% | 3% | 28% | 10% | 18 |
+| 36 | FLIGHT | 131 | 10-23 | 2231 | 43x25 | 11.1 | 0.42 | 4.0% | 3% | 28% | 10% | 18 |
+| 37 | FLIGHT | 131 | 10-24 | 2305 | 43x25 | 11.1 | 0.42 | 4.1% | 4% | 28% | 11% | 19 |
+| 38 | FLIGHT | 132 | 10-24 | 2330 | 43x25 | 11.1 | 0.42 | 4.1% | 4% | 28% | 11% | 19 |
+| 39 | FLIGHT | 132 | 10-24 | 2336 | 43x25 | 11.1 | 0.42 | 4.2% | 4% | 28% | 11% | 19 |
+| 40 | **FLIGHT BOSS** | 166 | 8-19 | 2564 | 43x25 | 11.1 | 0.42 | 9.2% | 14% | 28% | 11% | 15 |
+| 41 | COLUMN | 99 | 14-34 | 2488 | 48x28 | 9.9 | 0.38 | 4.3% | 5% | 28% | 11% | 27 |
+| 42 | COLUMN | 99 | 14-34 | 2494 | 48x28 | 9.9 | 0.38 | 4.4% | 5% | 28% | 11% | 27 |
+| 43 | COLUMN | 100 | 14-34 | 2527 | 48x28 | 9.9 | 0.38 | 4.4% | 5% | 29% | 11% | 27 |
+| 44 | COLUMN | 100 | 14-35 | 2587 | 48x28 | 9.9 | 0.38 | 4.5% | 6% | 29% | 11% | 28 |
+| 45 | COLUMN | 101 | 14-35 | 2620 | 48x28 | 9.9 | 0.38 | 4.5% | 6% | 29% | 11% | 28 |
+| 46 | COLUMN | 101 | 15-35 | 2681 | 48x28 | 9.9 | 0.38 | 4.6% | 6% | 29% | 11% | 28 |
+| 47 | COLUMN | 101 | 15-36 | 2742 | 48x28 | 9.9 | 0.38 | 4.6% | 6% | 29% | 11% | 29 |
+| 48 | COLUMN | 102 | 15-36 | 2776 | 48x28 | 9.9 | 0.39 | 4.7% | 7% | 29% | 11% | 29 |
+| 49 | COLUMN | 102 | 15-36 | 2784 | 48x28 | 9.9 | 0.39 | 4.7% | 7% | 29% | 11% | 29 |
+| 50 | **COLUMN BOSS** | 129 | 12-29 | 3103 | 48x28 | 9.9 | 0.39 | 9.8% | 17% | 29% | 11% | 23 |
+| 51 | COLUMN | 103 | 15-37 | 2882 | 48x28 | 9.9 | 0.39 | 4.8% | 8% | 29% | 12% | 30 |
+| 52 | COLUMN | 103 | 15-37 | 2890 | 48x28 | 9.9 | 0.39 | 4.9% | 8% | 29% | 12% | 30 |
+| 53 | COLUMN | 104 | 15-37 | 2926 | 48x28 | 9.9 | 0.39 | 5.0% | 8% | 29% | 12% | 30 |
+| 54 | COLUMN | 104 | 16-38 | 3047 | 48x28 | 9.9 | 0.39 | 5.0% | 9% | 29% | 12% | 30 |
+| 55 | COLUMN | 104 | 16-38 | 3055 | 48x28 | 9.9 | 0.39 | 5.1% | 9% | 29% | 12% | 30 |
+| 56 | COLUMN | 105 | 16-38 | 3093 | 48x28 | 9.9 | 0.39 | 5.1% | 9% | 29% | 12% | 30 |
+| 57 | COLUMN | 105 | 16-39 | 3159 | 48x28 | 9.9 | 0.39 | 5.2% | 9% | 29% | 12% | 31 |
+| 58 | COLUMN | 106 | 16-39 | 3197 | 48x28 | 9.9 | 0.39 | 5.2% | 10% | 29% | 12% | 31 |
+| 59 | COLUMN | 106 | 16-39 | 3206 | 48x28 | 9.9 | 0.40 | 5.3% | 10% | 30% | 12% | 31 |
+| 60 | **COLUMN BOSS** | 132 | 13-32 | 3572 | 48x28 | 9.9 | 0.40 | 10.3% | 20% | 30% | 12% | 26 |
+| 61 | PHALANX | 83 | 21-51 | 3304 | 59x34 | 8.4 | 0.34 | 5.4% | 11% | 30% | 12% | 41 |
+| 62 | PHALANX | 84 | 21-51 | 3352 | 59x34 | 8.4 | 0.34 | 5.4% | 11% | 30% | 12% | 41 |
+| 63 | PHALANX | 84 | 21-52 | 3408 | 59x34 | 8.4 | 0.34 | 5.5% | 11% | 30% | 12% | 42 |
+| 64 | PHALANX | 84 | 22-52 | 3464 | 59x34 | 8.4 | 0.34 | 5.5% | 11% | 30% | 12% | 42 |
+| 65 | PHALANX | 84 | 22-53 | 3520 | 59x34 | 8.4 | 0.34 | 5.6% | 12% | 30% | 13% | 42 |
+| 66 | PHALANX | 85 | 22-53 | 3571 | 59x34 | 8.4 | 0.34 | 5.7% | 12% | 30% | 13% | 42 |
+| 67 | PHALANX | 85 | 22-53 | 3580 | 59x34 | 8.4 | 0.34 | 5.7% | 12% | 30% | 13% | 42 |
+| 68 | PHALANX | 85 | 22-54 | 3637 | 59x34 | 8.4 | 0.34 | 5.8% | 13% | 30% | 13% | 43 |
+| 69 | PHALANX | 85 | 22-54 | 3647 | 59x34 | 8.4 | 0.34 | 5.8% | 13% | 30% | 13% | 43 |
+| 70 | **PHALANX BOSS** | 108 | 18-43 | 4058 | 59x34 | 8.4 | 0.34 | 10.9% | 23% | 30% | 13% | 34 |
+| 71 | PHALANX | 86 | 23-55 | 3807 | 59x34 | 8.4 | 0.34 | 5.9% | 13% | 30% | 13% | 44 |
+| 72 | PHALANX | 86 | 23-55 | 3816 | 59x34 | 8.4 | 0.35 | 6.0% | 14% | 30% | 13% | 44 |
+| 73 | PHALANX | 87 | 23-55 | 3871 | 59x34 | 8.4 | 0.35 | 6.0% | 14% | 30% | 13% | 44 |
+| 74 | PHALANX | 87 | 23-55 | 3881 | 59x34 | 8.4 | 0.35 | 6.1% | 14% | 30% | 13% | 44 |
+| 75 | PHALANX | 87 | 23-56 | 3941 | 59x34 | 8.4 | 0.35 | 6.1% | 15% | 30% | 13% | 45 |
+| 76 | PHALANX | 87 | 23-56 | 3951 | 59x34 | 8.4 | 0.35 | 6.2% | 15% | 31% | 13% | 45 |
+| 77 | PHALANX | 88 | 23-56 | 4006 | 59x34 | 8.4 | 0.35 | 6.3% | 15% | 31% | 13% | 45 |
+| 78 | PHALANX | 88 | 23-57 | 4067 | 59x34 | 8.4 | 0.35 | 6.3% | 16% | 31% | 13% | 46 |
+| 79 | PHALANX | 88 | 24-57 | 4129 | 59x34 | 8.4 | 0.35 | 6.4% | 16% | 31% | 14% | 46 |
+| 80 | **PHALANX BOSS** | 110 | 19-46 | 4509 | 59x34 | 8.4 | 0.35 | 11.4% | 26% | 31% | 14% | 37 |
+| 81 | BULWARK | 68 | 31-75 | 4196 | 72x42 | 7.0 | 0.29 | 6.5% | 16% | 31% | 14% | 60 |
+| 82 | BULWARK | 68 | 31-76 | 4246 | 72x42 | 7.0 | 0.30 | 6.5% | 17% | 31% | 14% | 61 |
+| 83 | BULWARK | 69 | 31-75 | 4279 | 72x42 | 7.0 | 0.30 | 6.6% | 17% | 31% | 14% | 60 |
+| 84 | BULWARK | 69 | 31-76 | 4330 | 72x42 | 7.0 | 0.30 | 6.6% | 17% | 31% | 14% | 61 |
+| 85 | BULWARK | 69 | 32-76 | 4382 | 72x42 | 7.0 | 0.30 | 6.7% | 18% | 31% | 14% | 61 |
+| 86 | BULWARK | 69 | 32-77 | 4433 | 72x42 | 7.0 | 0.30 | 6.7% | 18% | 31% | 14% | 62 |
+| 87 | BULWARK | 69 | 32-77 | 4444 | 72x42 | 7.0 | 0.30 | 6.8% | 18% | 31% | 14% | 62 |
+| 88 | BULWARK | 70 | 32-77 | 4520 | 72x42 | 7.0 | 0.30 | 6.8% | 18% | 31% | 14% | 62 |
+| 89 | BULWARK | 70 | 32-77 | 4531 | 72x42 | 7.0 | 0.30 | 6.9% | 19% | 31% | 14% | 62 |
+| 90 | **BULWARK BOSS** | 88 | 26-62 | 4997 | 72x42 | 7.0 | 0.30 | 12.0% | 29% | 31% | 14% | 50 |
+| 91 | BULWARK | 70 | 32-78 | 4595 | 72x42 | 7.0 | 0.30 | 7.0% | 19% | 31% | 14% | 62 |
+| 92 | BULWARK | 70 | 33-79 | 4690 | 72x42 | 7.0 | 0.30 | 7.1% | 20% | 32% | 14% | 63 |
+| 93 | BULWARK | 71 | 32-78 | 4684 | 72x42 | 7.0 | 0.30 | 7.1% | 20% | 32% | 15% | 62 |
+| 94 | BULWARK | 71 | 33-79 | 4781 | 72x42 | 7.0 | 0.30 | 7.2% | 20% | 32% | 15% | 63 |
+| 95 | BULWARK | 71 | 33-79 | 4792 | 72x42 | 7.0 | 0.30 | 7.2% | 21% | 32% | 15% | 63 |
+| 96 | BULWARK | 71 | 33-80 | 4847 | 72x42 | 7.0 | 0.30 | 7.3% | 21% | 32% | 15% | 64 |
+| 97 | BULWARK | 71 | 33-80 | 4859 | 72x42 | 7.0 | 0.30 | 7.3% | 21% | 32% | 15% | 64 |
+| 98 | BULWARK | 72 | 33-80 | 4939 | 72x42 | 7.0 | 0.31 | 7.4% | 21% | 32% | 15% | 64 |
+| 99 | BULWARK | 72 | 33-80 | 4951 | 72x42 | 7.0 | 0.31 | 7.4% | 22% | 32% | 15% | 64 |
+| 100 | **BULWARK BOSS** | 90 | 27-65 | 5465 | 72x42 | 7.0 | 0.31 | 12.5% | 32% | 32% | 15% | 52 |
